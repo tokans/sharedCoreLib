@@ -1,0 +1,8 @@
+{
+  "name": "fixture-failing-app",
+  "version": "1.0.0",
+  "private": true,
+  "dependencies": {
+    "sharedcorelib": "^1.0.0"
+  }
+}

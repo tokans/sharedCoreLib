@@ -1,0 +1,11 @@
+[
+  { "value": "Spouse", "label": "Spouse", "source": "baked" },
+  { "value": "Child", "label": "Child", "source": "baked" },
+  { "value": "Parent", "label": "Parent", "source": "baked" },
+  { "value": "Sibling", "label": "Sibling", "source": "baked" },
+  { "value": "Grandparent", "label": "Grandparent", "source": "baked" },
+  { "value": "Friend", "label": "Friend", "source": "baked" },
+  { "value": "Executor", "label": "Executor", "source": "baked" },
+  { "value": "Nominee", "label": "Nominee", "source": "baked" },
+  { "value": "Guardian", "label": "Guardian", "source": "baked" }
+]

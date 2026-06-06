@@ -1,0 +1,33 @@
+{
+  "$comment": "sharedcorelib security policy for THIS app. See publisher-ci/README.md.",
+  "coreVersion": "1.0.0",
+  "deprecationWindow": 3,
+  "trustManifest": "publisher.trust.json",
+  "releaseSigning": "release.signing.json",
+  "deprecations": "deprecations.json",
+  "source": {
+    "include": ["src", "src-tauri/src"],
+    "ignore": []
+  },
+  "kdf": {
+    "minPbkdf2Iterations": 600000,
+    "requireFormatHeader": true
+  },
+  "criticalDeps": [
+    "sharedcorelib",
+    "@noble/ed25519",
+    "@noble/hashes",
+    "@tauri-apps/plugin-stronghold",
+    "@tauri-apps/plugin-http"
+  ],
+  "feed": {
+    "requireHttps": true
+  },
+  "release": {
+    "publishOwner": "__PUBLISH_OWNER__",
+    "workflow": ".github/workflows/release.yml",
+    "requirePublishToken": true,
+    "forbidInCiSigningKeys": true
+  },
+  "failOn": "high"
+}

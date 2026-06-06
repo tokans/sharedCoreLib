@@ -1,0 +1,6 @@
+{
+  "coreVersion": "1.0.0",
+  "source": { "include": ["src"], "ignore": [] },
+  "criticalDeps": ["sharedcorelib"],
+  "failOn": "high"
+}

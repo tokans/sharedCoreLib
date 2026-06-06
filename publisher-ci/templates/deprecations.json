@@ -1,0 +1,12 @@
+{
+  "$comment": "Ledger of deprecated shared-runtime APIs. Maintained by the LIB publisher. Each entry must satisfy removeAt - since >= deprecationWindow (default 3 core versions). See README principle #6.",
+  "entries": [
+    {
+      "api": "example: createOtaUpdater(cfg).legacyRun()",
+      "since": "1.2.0",
+      "removeAt": "1.5.0",
+      "replacement": "createOtaUpdater(cfg).runUpdate()",
+      "removedInCode": false
+    }
+  ]
+}

@@ -1,0 +1,17 @@
+name: Build & Release
+on:
+  push:
+    tags: ["v*"]
+env:
+  PUBLISH_REPO: tokans/fixture-passing-app
+permissions:
+  contents: read
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Publish release on the publisher account
+        env:
+          GH_TOKEN: ${{ secrets.PUBLISH_TOKEN }}
+        run: gh release create "$GITHUB_REF_NAME" --repo "$PUBLISH_REPO" --generate-notes

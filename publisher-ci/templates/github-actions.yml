@@ -1,0 +1,21 @@
+# Suite security gate — runs the sharedcorelib publisher checks on every push/PR.
+# Copied into the consuming app at .github/workflows/security.yml by `init`.
+name: security
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+jobs:
+  sharedcorelib-security:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      # Install dev deps so the toolkit (a devDependency) is available.
+      - run: npm ci
+      # Fails the build on any finding at or above the configured threshold (default: high).
+      - run: npx sharedcorelib-publisher-ci check

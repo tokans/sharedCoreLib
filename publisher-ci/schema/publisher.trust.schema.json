@@ -1,0 +1,67 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://sharedcorelib/schema/publisher.trust.schema.json",
+  "title": "Publisher trust manifest",
+  "type": "object",
+  "required": ["root", "delegations", "feed", "newAppOnboarding"],
+  "additionalProperties": true,
+  "properties": {
+    "root": {
+      "type": "object",
+      "required": ["publicKeyHex", "offline", "immutable"],
+      "properties": {
+        "keyId": { "type": "string" },
+        "algo": { "const": "ed25519" },
+        "publicKeyHex": { "type": "string", "minLength": 1 },
+        "offline": { "const": true },
+        "immutable": { "const": true }
+      }
+    },
+    "delegations": {
+      "type": "object",
+      "required": ["data", "code", "snapshot", "timestamp"],
+      "properties": {
+        "data": { "$ref": "#/$defs/delegation" },
+        "code": {
+          "allOf": [
+            { "$ref": "#/$defs/delegation" },
+            { "properties": { "threshold": { "type": "integer", "minimum": 2 } }, "required": ["threshold"] }
+          ]
+        },
+        "snapshot": { "$ref": "#/$defs/delegation" },
+        "timestamp": {
+          "allOf": [
+            { "$ref": "#/$defs/delegation" },
+            { "properties": { "maxExpiryDays": { "type": "integer", "minimum": 1, "maximum": 14 } } }
+          ]
+        }
+      }
+    },
+    "feed": {
+      "type": "object",
+      "required": ["baseUrl", "anchorSource"],
+      "properties": {
+        "baseUrl": { "type": "string", "pattern": "^https://" },
+        "anchorSource": { "const": "baked" }
+      }
+    },
+    "newAppOnboarding": {
+      "type": "object",
+      "required": ["requireRootDelegation"],
+      "properties": { "requireRootDelegation": { "const": true } }
+    }
+  },
+  "$defs": {
+    "delegation": {
+      "type": "object",
+      "required": ["publicKeyHex", "signedByRoot"],
+      "properties": {
+        "keyId": { "type": "string" },
+        "algo": { "const": "ed25519" },
+        "publicKeyHex": { "type": "string", "minLength": 1 },
+        "signedByRoot": { "const": true },
+        "threshold": { "type": "integer", "minimum": 1 }
+      }
+    }
+  }
+}

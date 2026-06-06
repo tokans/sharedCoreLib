@@ -1,0 +1,17 @@
+name: Build & Release (deliberately broken)
+# Broken on purpose: no PUBLISH_TOKEN (uses the built-in GITHUB_TOKEN, which can't write
+# cross-account), no PUBLISH_REPO targeting the publisher account, and a feed signing key
+# leaked into CI (signing must be offline).
+on:
+  push:
+    tags: ["v*"]
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Publish (wrong)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          MASTERS_SIGNING_PRIVATE_KEY: ${{ secrets.MASTERS_SIGNING_PRIVATE_KEY }}
+        run: gh release create "$GITHUB_REF_NAME" --generate-notes

@@ -1,0 +1,33 @@
+{
+  "name": "sharedcorelib-publisher-ci",
+  "version": "0.1.0",
+  "description": "Dev-only CI/CD toolkit that enforces the sharedcorelib suite's security protocols (key hierarchy, anti-rollback/freshness update metadata, deprecation window, crypto hygiene, TLS-only, supply-chain pinning) at each consuming app's build stage. NOT shipped in the downloadable runtime.",
+  "type": "module",
+  "private": false,
+  "bin": {
+    "sharedcorelib-publisher-ci": "bin/cli.mjs"
+  },
+  "files": [
+    "bin",
+    "src",
+    "templates",
+    "schema",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "test": "node test/run.mjs",
+    "selftest": "node bin/cli.mjs check --dir=fixtures/passing && echo OK"
+  },
+  "keywords": [
+    "security",
+    "ci",
+    "supply-chain",
+    "tuf",
+    "tauri",
+    "sharedcorelib"
+  ],
+  "license": "UNLICENSED"
+}

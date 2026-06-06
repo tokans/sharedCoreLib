@@ -1,0 +1,346 @@
+# sharedcorelib — consumption contract
+
+The canonical reference for how an app in the suite (myFinance, myHealth, future
+ones) consumes the shared core **identically**, and the install/reuse/refcount/
+version contract for the heavy shared runtime assets. Mirrors the `@mydemo/core`
+precedent: standalone package, consumed via `file:../`, **dependency-injected
+config — no module-level singletons**.
+
+> Names are placeholders — rename `sharedcorelib` / `C:\workspace\sharedCoreLib` /
+> the `SharedCoreLib` suite dir to taste; keep the `file:../` + DI shape.
+
+---
+
+## 0. Two layers of "core"
+
+| Layer | What | Sharing |
+|---|---|---|
+| **L1 — app-specific bundle** | each app's OWN pages, domain, branding (NOT the shared code) | Bundled into the app's webview bundle at build time. Per app; keeps apps standalone. |
+| **L2 — runtime-shared assets** | the **shared-runtime library bundle** (this package's compiled JS), the OTA masters cache, the published-apps registry + client-local state, the updater lease, and any native sidecars/models | **Installed once into a per-user shared suite dir and reused** by every installed app (first app downloaded bootstraps it if absent; later apps — even installed directly from the web — detect and reuse it). The shared runtime stays backward-compatible within a **3-version deprecation window** (deprecate at `vN`, removable at `vN+3`) and the publisher pins every app to the latest, so one update benefits all. This is the "first app installs, the rest reuse" win. See §5. |
+
+> **Revised from the original precedent.** Earlier this package was bundled per app
+> (L1, "not runtime-shared"). It is now a **runtime-shared L2 asset** so a single
+> background update lifts every installed app; only app-specific content stays in L1.
+> The suite update manager (§7) downloads and hot-reloads it.
+
+---
+
+## 1. How an app consumes the core (L1)
+
+1. Add the dependency:
+   ```jsonc
+   // app/package.json
+   "dependencies": { "sharedcorelib": "file:../sharedCoreLib" }
+   ```
+2. Build the library before the app (its subpath `exports` point at `dist/`).
+   myFinance does this with a `prebuild` script:
+   ```jsonc
+   "scripts": { "prebuild": "npm --prefix ../sharedCoreLib run build" }
+   ```
+   (`npm install` in the lib once, so its own devDeps exist.)
+3. The app's `tsconfig.json` must use `"moduleResolution": "Bundler"` (or
+   `NodeNext`) so subpath `exports` resolve. `skipLibCheck: true` keeps the lib's
+   emitted `.d.ts` from being re-typechecked under the app's stricter flags.
+4. Import from subpaths and **inject config** — never rely on a global.
+
+The package is ESM-only (`"type": "module"`); each subpath exposes `types` +
+`import` conditions. Tauri plugins, `react`, `zod`, `zustand`, `@noble/*`,
+`clsx`, `tailwind-merge` are **peerDependencies** (the app provides the single
+bundled copy); the lib also lists them as devDeps so it type-checks in isolation.
+
+---
+
+## 2. Subpath exports & public API
+
+| Import | Exports | App supplies |
+|---|---|---|
+| `sharedcorelib/env` | `isTauri`, `isWeb`, `isMobile`, `isDesktop` | — (fully generic) |
+| `sharedcorelib/crypto` | `encryptJson`, `decryptJson` (PBKDF2→AES-GCM, `salt‖iv‖ct`) | the passphrase |
+| `sharedcorelib/vault` | `createVault(config)` → `Vault`; pure `sealWithKey`/`openWithKey`; `Credential` | `clientName`, `snapshotFile`, optional `docKeyRecord`/`documentsSubdir`. **Argon2 salt/params are NOT here — they live in the app's `src-tauri/src/lib.rs` and must never change** (see §3). |
+| `sharedcorelib/masters` | merge: `mergeMasterOptions`, `pickMode`, `DROPDOWN_MAX`, `MasterOption`; verify: `verifyManifestSignature`, `sha256Hex`, `decryptTransport`, `meetsMinVersion`, `verifyAndDecryptManifest`, `genericManifestSchema`; OTA: `createOtaUpdater(config)`; **common masters + namespacing**: `getCommonBaked`, `COMMON_MASTER_IDS`, `isCommonMaster`, `COMMON_SCOPE`, `qualifyMasterKey`, `parseMasterKey` (see §5.7) | release `baseUrl`, signing `pubkeyHex`, `transportKeyB64`, its OWN **app-specific** master registry + zod schemas (reusing the common sets), `getLastRevision`/`applyEntry` adapters, and (for L2) `cacheDir` + `cacheNamespace` |
+| `sharedcorelib/tiers` | `resolveTier`, `tierReached`, `nextEarnedTiers`, `TierDef`; **standard top tiers**: `standardTopTiers`, `hasPatronAccess`, `becomePatronVisible`, `PatronPartnerCtx`, `PATRON_TIER_KEY`/`PARTNER_TIER_KEY` | the app's **earned** ladder (each `{key,label,criteria,reached,grant?}`) + display fields; spread `standardTopTiers()` on the end (Patron/Partner are shared). Patron/Partner status comes from `/grant` |
+| `sharedcorelib/grant` | `verifyGrant`, `createGrantReceiver`, `GrantEnvelope`/`GrantKeys`/`GrantReceiver` | grant signing keys (**separate** from masters keys), `parsePayload`, and the receive-only channels `readDroppedFile` / `fetchByToken` (file-drop / anonymous backend token). Receive-only — never uploads |
+| `sharedcorelib/gating` | `FeatureGate`, `isFeatureUnlocked`, `createGatingStore(config)`, `GatingState` | flag shape, gate defs + copy, `computeFlags()` (queries app DB), `unlockedAll`, optional `override` (wire to `hasPatronAccess` → a Patron/Partner unlocks all). The `FeatureGuard` React component stays in the app. |
+| `sharedcorelib/reminders` | pure scheduling (`daysBetween`, `addDaysISO`, `addYearsISO`, `bucketFor`, `shouldNotify`, `nextAnnual`, `fyReviewDueDate`, `byDueDate`, `dueLabel`, `isSnoozed`, `DUE_SOON_DAYS`, `ReminderLike`); notify (`ensureNotificationPermission`, `sendNotification`); `runReminderSweep(adapters)` | the derived-reminder generators + DB adapters (`syncDerived`, `listOpen`, `markFired`) + `today` |
+| `sharedcorelib/report` | `printHtmlAsPdf`, `escapeHtml` | the report HTML templates |
+| `sharedcorelib/ice` | `mentionsContact`, `telHref`, `mailtoHref`, `hasActionableContact`, `CONTACT_PHRASES` | ICE-card fields + disclaimer copy |
+| `sharedcorelib/sync` | `isNewer` (LWW rule), `SyncDb` | the table SPEC + change-set/`Bundle` shape + the merge engine that walks it + the Rust transport (all schema-bound — see §4). Envelope crypto = `sharedcorelib/crypto`. |
+| `sharedcorelib/ui` | `cn`, `ClassValue` | (heavier UI kit deferred — see §4) |
+| `sharedcorelib/suite` 🟡 *engine implemented* | `createSuiteUpdater(config)` → background daily check (masters + registry + app/self version), verify-at-load + anti-rollback + freshness + native-owned confirm → hot-reload/next-launch; `createAppCatalog(config)` → the **app marketplace** (mobile "More"): list installed + uninstalled apps, install/open-marketing/uninstall/phone-sync; `TrustAnchor`/`DelegatedKey`/`PublishedApp`/`AppLocalState` types + pure helpers (see §7) | baked trust anchor (feed `baseUrl` + root + delegated keys + transport key), `fetchFile`/`now`/lease adapters, installed-version lookups, the native `confirmUpdate(...)`, apply/stage handlers, and for the marketplace the registry + per-app-private local-state adapters + `openExternal` |
+
+Every factory takes a **resolved config object**; there is no module-level state.
+`createVault`/`createOtaUpdater`/`createGatingStore` close over their state, so the
+returned methods are safe to destructure.
+
+---
+
+## 3. ⚠️ Per-app secret: the vault salt
+
+The Stronghold snapshot key is derived with **Argon2id from a per-app constant
+salt + params** in each app's **`src-tauri/src/lib.rs`** (`tauri_plugin_stronghold::Builder`).
+It is **NOT** in this library and **must never change for an existing app** —
+changing it makes every existing user's vault snapshot undecryptable (bricked).
+The TS `createVault` only needs `clientName` + `snapshotFile`; the key-derivation
+secret stays in the app's Rust shell. Each app uses its own distinct salt; vaults
+are never shared between apps.
+
+---
+
+## 4. What is intentionally left in-app (and why)
+
+- **Rust transport / `sync.rs` byte-pipe** — cross-language packaging is the
+  prompt's explicit stretch goal. Each app keeps a thin `src-tauri` that wires the
+  plugins + its own sync transport; the TS sync KERNEL (`isNewer`, `SyncDb`) +
+  envelope crypto (`/crypto`) are shared.
+- **Sync merge engine** — `applyBundle` is bound to each app's table SPEC,
+  identity kinds, FK graph, tombstone keys, and per-table special cases (blob
+  re-seal, credential restore). Generalising it means injecting the full SPEC +
+  hooks; until a second app needs it, the kernel + crypto are the shared parts.
+- **Launch telemetry** — recording launches / counting distinct days is DB-bound
+  (app SQLite, an app migration). The shared part is the **tier ladder resolution**
+  (`/tiers`); the telemetry that feeds the tier context stays per-app.
+- **`FeatureGuard`, `LockedFeature`, gate defs** — the gate framework + store
+  factory are shared (`/gating`); the locked-state UI, routing, and unlock-in-place
+  dialogs are app-specific.
+- **UI kit (shadcn primitives, `AppShell`, `FiniteSetInput`)** — only `cn` is
+  extracted so far. To move the primitives, the consuming app must add this
+  package's source/`dist` to its **Tailwind `content` globs** (otherwise the
+  primitives' utility classes are purged from the app's CSS). `AppShell` needs an
+  injected nav config + theme; `FiniteSetInput` needs the app's master-data hook
+  injected. Tracked as the next UI step.
+
+---
+
+## 5. Install / reuse / refcount / version contract (L2)
+
+Implemented app-side in **`src-tauri/src/core_bootstrap.rs`** (portable across all
+installers because it runs in `lib.rs` setup). myFinance is wired as the **first**
+app that lays the core down.
+
+### 5.1 Shared suite dir (per-user, no admin)
+
+```
+Windows : %LOCALAPPDATA%\SharedCoreLib\core\
+macOS   : ~/Library/Application Support/SharedCoreLib/core\
+Linux   : ~/.local/share/SharedCoreLib/core\
+   ├─ manifest.json     # { "core_version": N, "owners": ["myFinance", ...] }
+   ├─ masters/          # shared OTA reference-data cache (downloaded once, reused)
+   ├─ bin/              # shared native sidecars (if any)
+   └─ models/           # shared ML models (if any)
+```
+Resolved via Tauri's `local_data_dir()`, which maps to exactly those three roots.
+
+### 5.2 Startup bootstrap (`ensure_shared_core`)
+
+1. **Lay-down-or-reuse**: if the shared dir is absent **or**
+   `manifest.core_version < CORE_VERSION` (this app's bundled L2 version) → create
+   / upgrade the L2 layout and bump the version; else **reuse, install nothing**.
+2. **Refcount**: add this app's `APP_ID` to `manifest.owners[]` (idempotent).
+3. **Standalone fallback**: if the shared dir is missing/unwritable, fall back to
+   the app's own `app_data_dir()/masters` — an app installed alone always works.
+4. Returns the **masters cache dir** to inject into the OTA updater.
+
+### 5.3 Uninstall (`deregister_shared_core`)
+
+Remove this app's id from `owners[]`; delete the shared dir **only when
+`owners[]` is empty**. Wire into the installer's uninstall step (platform-specific).
+So removing one app never breaks another.
+
+### 5.4 Masters OTA cache injection (the cleanest win)
+
+`createOtaUpdater({ ... cacheDir })` accepts the shared masters path. The webview
+gets it from the `shared_core_masters_dir` Tauri command (which calls
+`ensure_shared_core`). The **first** suite app to pull downloads the signed bundle
+into `…/core/masters`; the **second** reuses the cache — no second download. Each
+app still applies only the master *types it registers* into its **own** SQLite
+`master_options`/`partners` (the downloaded bytes are shared; the materialised
+per-app tables are not). *Status:* the bootstrap + path injection + config knob are
+in place; materialising the downloaded bundle to `cacheDir` (vs re-fetch) is the
+remaining incremental step in `createOtaUpdater`.
+
+### 5.5 Versioning
+
+Backward-compatible **within a major**: apps require `coreMajor == N &&
+coreMinor >= m`. A newer app **upgrades the shared core in place** (bumps
+`core_version`); older apps keep working. A breaking change uses a **versioned
+subdir** (`core/v2/`) so majors coexist and each app picks its own.
+
+### 5.6 Never shared (security & independence)
+
+Vaults (per-app Argon2 salt), app SQLite DBs, and app settings stay **strictly
+per-app and isolated**. Only the redistributable L2 assets above are shared.
+
+---
+
+## 5.7 Common masters & conflict-free shared store
+
+When the L2 layer is shared across apps, master ids are **scope-qualified** so a
+shared store (the OTA cache, or a common masters DB) has **no name or search
+conflicts**:
+
+- **`common:<id>`** — reference data **owned by the core and reused by every app**,
+  defined once in `sharedcorelib/masters/common.ts` (currently `country`, `city`,
+  `currency`, `relationship`). Apps call `getCommonBaked(id, parent)` for the baked
+  set instead of shipping their own copy. (myFinance now sources these from the
+  core; its duplicate `cities.seed.json`/`relationships.json` were deleted.)
+- **`<appId>:<id>`** — an app's own masters (e.g. `myfinance:institution`). Two
+  apps can both define `institution` with no clash, and no app can shadow a
+  `common:` master.
+
+Helpers: `COMMON_SCOPE`, `qualifyMasterKey(scope, id)`, `parseMasterKey(key)`,
+`isCommonMaster(id)`, `COMMON_MASTER_IDS`.
+
+**Rules for any shared store** (so there are never name/search conflicts):
+
+1. Key every row/file/bundle by the **fully-qualified** `scope:id`, never a bare
+   id. Lookups/searches always filter by the qualified key.
+2. In the OTA cache, each app writes under `createOtaUpdater({ cacheNamespace })`
+   (default `COMMON_SCOPE`); the **common** masters bundle uses `COMMON_SCOPE` so
+   it is downloaded **once** and reused, while each app's own bundle lives under
+   its own namespace — no filename collisions.
+3. A common masters **DB/store** in the shared dir holds `common:*` rows only,
+   read by all apps; **app-specific masters stay in each app's own SQLite** under
+   the app scope. The shared bytes are common; the materialised per-app tables are
+   not (and carry the app scope), so an app's `institution` never overwrites
+   another's.
+4. The anti-downgrade revision is tracked **per namespace**, so a common-bundle
+   update and an app-bundle update can't roll each other back.
+
+This keeps "common masters defined once, reused everywhere" and "no name/search
+conflicts in the shared db" true simultaneously.
+
+## 6. Adoption checklist for a new app
+
+1. `"sharedcorelib": "file:../sharedCoreLib"` + a `prebuild` that builds the lib.
+2. Write one app-config: app name/db name, vault `clientName`/`snapshotFile` (+ the
+   per-app Argon2 salt in `lib.rs`), OTA `baseUrl`+keys+registry+schemas, tier
+   ladder, gate defs + `computeFlags`, reminder generators + adapters, report
+   templates, ICE fields, sync SPEC + transport.
+3. Call the core factories with that config; implement app-specific domain, pages,
+   migrations, import.
+4. Copy `core_bootstrap.rs` (change `APP_ID`), call `ensure_shared_core` in setup,
+   register `shared_core_masters_dir`, and (on first download) bootstrap the
+   shared-runtime bundle if absent (§7).
+5. Bake the publisher feed trust anchor (`baseUrl` + `pubkeyHex` + transport key),
+   wire `createSuiteUpdater` to run the daily check, and provide the
+   `confirmUpdate` callback (§7). Mount the **app marketplace** (`createAppCatalog`) in
+   the app's "More" surface so users can discover/install other suite apps (§7.6).
+6. Add `sharedcorelib-publisher-ci` as a `devDependency`, run `… init` to scaffold the
+   trust manifest + signing config + CI gate + release pipeline, fill in real keys, and
+   make `… check` a required CI step (it enforces the THREAT_MODEL.md controls).
+7. Add `"@mydemo/core": "file:../myDemo"` as a `devDependency` and author a demo
+   scenario per feature (`demo/scenarios/*`). Use it for **live testing + issue-fix**:
+   record → open the GIF → fix what the demo surfaces → re-record (myFinance is the
+   reference consumer). See the `create-suite-app` skill, Stage 9.
+8. `npm run build` + `npm run test` + `npx sharedcorelib-publisher-ci check` green, and
+   each feature's demo recorded → the app builds & runs standalone and is protocol-aligned.
+
+---
+
+## 7. Suite update manager (L2 service)
+
+> Status: the verification **engine** (`createSuiteUpdater` + `TrustAnchor`/delegation
+> types + `verifyDelegated`/`verifyTargetBytes`/`isFresh`/`passesAntiRollback`/
+> `buildUpdatePlan`) is implemented and unit-tested. The app injects the network/fs/lease
+> adapters, the hot-reload/stage handlers, and the native-shell `confirmUpdate` UI.
+
+
+> **Security model:** the trust boundaries, key hierarchy, TUF-style update flow, and
+> residual risks for everything in this section are specified in
+> [`THREAT_MODEL.md`](./THREAT_MODEL.md), and enforced at each app's build stage by the
+> [`publisher-ci`](./publisher-ci) dev toolkit (§9 of the threat model maps each control
+> to its enforcer).
+
+A single client-side, **background non-blocking** service — shared by every installed
+app — that keeps reference data **and versions** current from the publisher's signed
+web feed. Design settled with the publisher's two decisions:
+
+- **Shared runtime, updated once** — the shared library JS is an L2 shared-runtime
+  bundle, backward-compatible within a **3-version deprecation window** (deprecate at
+  `vN` → removable at `vN+3`; every release stays compatible with the last 3),
+  downloaded once and reused by all apps; the publisher pins every app to the latest.
+  App bundles hold only app-specific content. The first app downloaded checks for the
+  shared bundle and, if absent, downloads it separately before continuing.
+- **Native updates apply on next launch** — webview/content updates (masters,
+  registry, shared-runtime JS, an app's own content pack) are **hot-reloaded live**;
+  native Rust shell / sidecar updates download in the background and apply on the
+  **next app start**.
+
+### 7.1 Trust anchor
+
+Each app is built with the feed `baseUrl` + Ed25519 `pubkeyHex` + transport key baked
+in. The feed location is recorded as a master so it is auditable, and is **add-only on
+approval, immutable thereafter**: approving a **new** app's download automatically adds
+that app's feed/trust anchor to the client registry (the approval *is* the
+authorization), but an **already-downloaded** app's anchor can never be repointed by
+any feed payload — so a compromised feed cannot hijack installed apps. Verification
+reuses the `/masters` pipeline: signature → revision/compat gate → per-file SHA-256 →
+AES-GCM transport decrypt.
+
+### 7.2 The daily check
+
+1. **One check per machine per day** — a cross-process **lease + `lastCheckedAt`** in
+   the shared suite `manifest.json` ensures exactly one app runs the check even with
+   several open; others read the result. Runs on startup + a daily timer, off the UI
+   thread, fail-silent.
+2. **Fetch + verify** the signed publisher manifest: published-apps catalogue, each
+   app's `latestVersion`, the `latestCoreVersion` (shared runtime), and the
+   common-masters bundle revision.
+3. **Diff** against installed app versions, the installed shared-runtime version, and
+   the applied masters revision (anti-downgrade tracked **per namespace**).
+4. **Confirm → background download → apply** per the hot-reload / next-launch rule.
+
+### 7.3 Published-apps registry (`common:app`)
+
+A core-owned common master listing every published app. Catalogue half (signed,
+shared, downloaded once): `appId`, `name`, `tagline`, `description`, `icon`,
+`marketingUrl`, `downloadLinks` (per platform), `latestVersion`, `latestCoreVersion`.
+**Client-local** half (in the shared suite manifest, never uploaded — receive-only):
+`installed`, `installedVersion`, `phoneSyncEnabled`. Keyed by `common:app`; drives the
+suite launcher / "more from this publisher" surface and what can be installed and
+sync-enabled on this client.
+
+### 7.4 Shared-dir layout additions
+
+Extends §5.1. The shared suite dir additionally holds the shared-runtime bundle and the
+updater/registry state:
+
+```
+…/SharedCoreLib/core/
+   ├─ manifest.json     # { core_version, owners[], lastCheckedAt, lease, apps:{<id>:{installed,installedVersion,phoneSyncEnabled}} }
+   ├─ runtime/          # the shared-runtime library bundle (compiled JS), hot-reloaded
+   ├─ masters/          # shared OTA reference-data cache (incl. common:app catalogue)
+   ├─ bin/  └─ models/   # shared native sidecars / ML models (if any)
+```
+
+### 7.5 Install-once / reuse
+
+Folds into `ensure_shared_core` (§5.2). First app downloaded lays down `runtime/` +
+`masters/` + the registry; later apps (even installed directly from the web) detect the
+shared dir, register in `owners[]`, and reuse everything. Refcounted uninstall (§5.3) is
+unchanged: the shared dir is removed only when `owners[]` empties, so removing one app
+never breaks another.
+
+### 7.6 App marketplace / launcher (the "More" surface)
+
+`createAppCatalog(config)` turns the §7.3 registry into the user-facing marketplace every
+app mounts (a store-like icon, under "More" on mobile): it lists **all** published apps —
+**installed and not** — so users can discover and manage the whole suite from inside any
+one app. The lib provides data + actions; the app renders the UI (DI, no module state):
+
+- `list()` / `listInstalled()` / `listAvailable()` — registry rows joined with this
+  client's per-app-private local state; each `AppCatalogEntry` carries `isCurrentApp`,
+  `updateAvailable`, the platform-resolved `downloadUrl`, and a **`primaryAction`**
+  (`"open"` | `"download"` | `"current"`).
+- **Click behavior** — `activate(appId)` dispatches by state: an **installed** app shows an
+  installed badge and **opens/launches** (`open` → injected `launchApp` deep-link / OS
+  launch); a **not-installed** app **downloads** (`install` → `openExternal` the platform
+  installer link, the **OS** performs the install, and the new app's own bootstrap (§5.2)
+  flips its `installed` state); the **current** app is a no-op. `openMarketing` opens the
+  marketing page; `markUninstalled` / `setPhoneSync` record local-state changes.
+
+App config supplies: `currentAppId`, `listPublishedApps` (read the shared registry),
+`getLocalState`/`setLocalState` (per-app-private, never uploaded), `openExternal` +
+`launchApp` (native), and an optional `platform()`. Install/launch are **OS-mediated** —
+the catalog surfaces links + state; it never sideloads. Feed-supplied
+`downloadLinks`/`marketingUrl` should be origin-allow-listed before opening (THREAT_MODEL §7).

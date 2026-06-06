@@ -1,0 +1,16 @@
+{
+  "$comment": "Deliberately broken: non-baked anchor, mutable root, http feed, code key reuses data key, weak code threshold, onboarding not root-chained.",
+  "root": {
+    "keyId": "root", "algo": "ed25519",
+    "publicKeyHex": "00000000000000000000000000000000000000000000000000000000000000aa",
+    "offline": false, "immutable": false
+  },
+  "delegations": {
+    "data":      { "keyId": "data", "algo": "ed25519", "publicKeyHex": "00000000000000000000000000000000000000000000000000000000000000bb", "threshold": 1, "signedByRoot": true },
+    "code":      { "keyId": "code", "algo": "ed25519", "publicKeyHex": "00000000000000000000000000000000000000000000000000000000000000bb", "threshold": 1, "signedByRoot": false },
+    "snapshot":  { "keyId": "snap", "algo": "ed25519", "publicKeyHex": "00000000000000000000000000000000000000000000000000000000000000cc", "signedByRoot": true },
+    "timestamp": { "keyId": "ts", "algo": "ed25519", "publicKeyHex": "00000000000000000000000000000000000000000000000000000000000000dd", "signedByRoot": true, "maxExpiryDays": 30 }
+  },
+  "feed": { "baseUrl": "http://updates.example.com/suite", "anchorSource": "feed" },
+  "newAppOnboarding": { "requireRootDelegation": false }
+}

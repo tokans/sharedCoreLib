@@ -1,0 +1,240 @@
+# Build & Release — generalized from the myFinance precedent.
+#
+# Builds the desktop executables, then publishes them as a GitHub Release on a
+# DIFFERENT account than the source code (the "publisher" account, e.g. `tokans`),
+# under a repo whose name matches this source repo. Also refreshes the README and a
+# gh-pages landing site on that destination repo.
+#
+# `__APP_NAME__` / `__PUBLISH_OWNER__` / `__REPO_NAME__` are filled in by
+# `sharedcorelib-publisher-ci init` from your app identity. Per-release values
+# (__VERSION__ etc.) are computed at run time below.
+#
+# Required repository secret (in the SOURCE repo):
+#   PUBLISH_TOKEN  A PAT with `contents: write` on __PUBLISH_OWNER__/__REPO_NAME__.
+#                  The built-in GITHUB_TOKEN cannot write to a different account,
+#                  which is why this is needed.
+#
+# SECURITY: this workflow holds NO signing keys. App/feed bundle signing is done
+# OFFLINE (see scripts/publish-feed.mjs) so private keys never enter CI — consistent
+# with THREAT_MODEL.md §2. The publisher-ci `release-pipeline` check enforces this.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release version (e.g. v0.1.0)"
+        required: true
+        type: string
+
+env:
+  PUBLISH_REPO: __PUBLISH_OWNER__/__REPO_NAME__
+
+permissions:
+  contents: read
+
+jobs:
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+    steps:
+      - id: v
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "version=${{ inputs.version }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+          fi
+
+  # Security gate: the suite protocols must pass before anything is published.
+  gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: "20" }
+      - run: npm ci
+      - run: npx sharedcorelib-publisher-ci check
+
+  build:
+    needs: [version, gate]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: windows-latest
+            artifact: windows
+          - platform: macos-latest
+            artifact: macos-arm64
+            args: "--target aarch64-apple-darwin"
+            rust-target: aarch64-apple-darwin
+          - platform: macos-13
+            artifact: macos-x64
+            args: "--target x86_64-apple-darwin"
+            rust-target: x86_64-apple-darwin
+    runs-on: ${{ matrix.platform }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust-target }}
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: "src-tauri -> target"
+          key: ${{ matrix.artifact }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - name: Build Tauri app
+        id: tauri
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          args: ${{ matrix.args }}
+      - name: Collect built bundles
+        shell: bash
+        run: |
+          mkdir -p dist-bundles
+          echo '${{ steps.tauri.outputs.artifactPaths }}' \
+            | tr -d '[]"' | tr ',' '\n' | sed '/^$/d' \
+            | while read -r f; do [ -f "$f" ] && cp "$f" dist-bundles/ || echo "skip: $f"; done
+          ls -la dist-bundles
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bundles-${{ matrix.artifact }}
+          path: dist-bundles/*
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    needs: [version, build]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source repo
+        uses: actions/checkout@v4
+      - name: Download all bundles
+        uses: actions/download-artifact@v4
+        with:
+          pattern: bundles-*
+          path: release-assets
+          merge-multiple: true
+      - run: ls -R release-assets
+
+      - name: Publish GitHub Release on the publisher account
+        env:
+          GH_TOKEN: ${{ secrets.PUBLISH_TOKEN }}
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          gh release create "$VERSION" \
+            --repo "$PUBLISH_REPO" \
+            --title "__APP_NAME__ $VERSION" \
+            --generate-notes \
+            release-assets/*
+
+      - name: Update README on the publisher repo
+        env:
+          GH_TOKEN: ${{ secrets.PUBLISH_TOKEN }}
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          git clone --depth 1 "https://x-access-token:${GH_TOKEN}@github.com/${PUBLISH_REPO}.git" dest-repo
+          cd dest-repo
+          NOTES="$(gh release view "$VERSION" --repo "$PUBLISH_REPO" --json body --jq .body)"
+          RELEASE_URL="https://github.com/${PUBLISH_REPO}/releases/tag/${VERSION}"
+          {
+            echo "# __APP_NAME__"
+            echo
+            echo "Download the installer for your platform from the [latest release](https://github.com/${PUBLISH_REPO}/releases/latest)."
+            echo
+            echo "## Release notes — ${VERSION}"
+            echo
+            echo "$NOTES"
+            echo
+            echo "_This README is generated automatically on each release._"
+          } > README.md
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add README.md
+          git commit -m "docs: update README for ${VERSION}" || { echo "No changes."; exit 0; }
+          git push
+
+      - name: Publish GitHub Pages landing site on the publisher repo
+        env:
+          GH_TOKEN: ${{ secrets.PUBLISH_TOKEN }}
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          RELEASE_URL="https://github.com/${PUBLISH_REPO}/releases/tag/${VERSION}"
+          LATEST_URL="https://github.com/${PUBLISH_REPO}/releases/latest"
+          AUTH_URL="https://x-access-token:${GH_TOKEN}@github.com/${PUBLISH_REPO}.git"
+          NOTES="$(gh release view "$VERSION" --repo "$PUBLISH_REPO" --json body --jq .body)"
+
+          if git clone --depth 1 --branch gh-pages "$AUTH_URL" site 2>/dev/null; then
+            echo "Updating existing gh-pages branch."
+          else
+            git clone --depth 1 "$AUTH_URL" site
+            ( cd site && git checkout --orphan gh-pages && git rm -rf . >/dev/null 2>&1 || true )
+          fi
+          cd site
+          printf '%s\n' "$NOTES" > release-notes.md
+          touch .nojekyll
+          if [ -d "${GITHUB_WORKSPACE}/.github/pages/assets" ]; then
+            mkdir -p assets && cp -R "${GITHUB_WORKSPACE}/.github/pages/assets/." assets/
+          fi
+          sed \
+            -e "s|__VERSION__|${VERSION}|g" \
+            -e "s|__REPO__|${PUBLISH_REPO}|g" \
+            -e "s|__RELEASE_URL__|${RELEASE_URL}|g" \
+            -e "s|__LATEST_URL__|${LATEST_URL}|g" \
+            "${GITHUB_WORKSPACE}/.github/pages/index.template.html" > index.html
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "site: publish ${VERSION} landing page" || { echo "No changes."; exit 0; }
+          git push origin HEAD:gh-pages
+
+  # ---------------------------------------------------------------------------
+  # Initiate a growth campaign on every publish: build the deterministic Phase 1-2
+  # inputs (UTM links to the live gh-pages site + a metrics baseline + a brief whose
+  # creative is the myDemo asset), then file an issue so a human runs the
+  # `growth-campaign-loop` skill from there. The interactive Phases 3-5 (posting,
+  # outreach) deliberately stay with the human.
+  # ---------------------------------------------------------------------------
+  campaign:
+    needs: [version, publish]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: "20" }
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - name: Build campaign brief (myDemo creative + gh-pages destination)
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+          APP_NAME: __APP_NAME__
+          PUBLISH_REPO: ${{ env.PUBLISH_REPO }}
+          PAGES_URL: https://__PUBLISH_OWNER__.github.io/__REPO_NAME__/
+          DEMO_ASSET: assets/demo.mp4
+        run: node scripts/launch-campaign.mjs
+      - name: Initiate the growth campaign (issue on the source repo)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          gh issue create \
+            --title "Growth campaign: __APP_NAME__ ${VERSION}" \
+            --body-file "campaign/${VERSION}/brief.md" \
+            --label growth 2>/dev/null \
+          || gh issue create \
+            --title "Growth campaign: __APP_NAME__ ${VERSION}" \
+            --body-file "campaign/${VERSION}/brief.md"

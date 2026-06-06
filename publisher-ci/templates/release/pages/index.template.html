@@ -1,0 +1,78 @@
+<!doctype html>
+<!--
+  __APP_NAME__ landing page TEMPLATE — published to the gh-pages branch of the
+  publisher repo (__PUBLISH_OWNER__/__REPO_NAME__) by .github/workflows/release.yml on
+  every release. Served at https://__PUBLISH_OWNER__.github.io/__REPO_NAME__/ once Pages
+  is enabled (Settings → Pages → Deploy from a branch → gh-pages / root).
+
+  EDIT THIS FILE to change the site. The workflow substitutes these tokens at publish
+  time — keep them spelled exactly:
+     __VERSION__       e.g. v1.2.3
+     __REPO__          e.g. __PUBLISH_OWNER__/__REPO_NAME__
+     __RELEASE_URL__   link to this version's release page
+     __LATEST_URL__    link to the "latest release" redirect
+  The release notes are fetched at runtime from the sibling release-notes.md.
+-->
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>__APP_NAME__</title>
+  <meta name="description" content="__APP_NAME__ — a private, offline-first desktop app. Your data stays on your device." />
+  <style>
+    :root { --bg:#0b0f17; --panel:#131a26; --text:#e7ecf3; --muted:#94a3b8; --brand:#4ade80; --brand2:#38bdf8; --border:#243044; }
+    * { box-sizing: border-box; }
+    body { margin:0; background:var(--bg); color:var(--text); font:16px/1.6 system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif; }
+    a { color:var(--brand2); text-decoration:none; } a:hover { text-decoration:underline; }
+    .wrap { max-width:1040px; margin:0 auto; padding:0 20px; }
+    .hero { text-align:center; padding:96px 0 64px; background:radial-gradient(60% 50% at 50% 0%, rgba(74,222,128,.12), transparent 70%); }
+    .hero h1 { font-size:48px; margin:0 0 12px; }
+    .hero p { color:var(--muted); font-size:20px; margin:0 auto 28px; max-width:640px; }
+    .btn { display:inline-block; padding:14px 28px; border-radius:12px; font-weight:700;
+      background:linear-gradient(135deg,var(--brand),var(--brand2)); color:#06210f; }
+    .ver { color:var(--muted); font-size:14px; margin-top:14px; }
+    .panel { background:var(--panel); border:1px solid var(--border); border-radius:16px; padding:28px; margin:24px 0; }
+    footer { color:var(--muted); text-align:center; padding:48px 0; border-top:1px solid var(--border); margin-top:48px; }
+    #notes h2 { margin-top:1.6em; } #notes code { background:#0f1622; padding:2px 6px; border-radius:6px; }
+  </style>
+</head>
+<body>
+  <section class="hero">
+    <div class="wrap">
+      <h1>__APP_NAME__</h1>
+      <p>A private, offline-first desktop app. No account, no cloud — your data stays on your device.</p>
+      <a class="btn" href="__LATEST_URL__">Download for your platform →</a>
+      <div class="ver">Latest: <a href="__RELEASE_URL__">__VERSION__</a></div>
+    </div>
+  </section>
+
+  <div class="wrap">
+    <div class="panel">
+      <h2>What's new in __VERSION__</h2>
+      <div id="notes">Loading release notes…</div>
+    </div>
+    <div class="panel">
+      <h2>Privacy</h2>
+      <p>__APP_NAME__ has no backend and no telemetry. All data lives locally on your own machine.</p>
+    </div>
+  </div>
+
+  <footer class="wrap">
+    <a href="https://github.com/__REPO__">Source &amp; releases</a> · built on sharedcorelib
+  </footer>
+
+  <!-- Minimal client-side markdown render of the release notes. -->
+  <script>
+    fetch("release-notes.md").then(r => r.ok ? r.text() : "").then(md => {
+      const html = (md || "_No notes._")
+        .replace(/&/g,"&amp;").replace(/</g,"&lt;")
+        .replace(/^### (.*)$/gm,"<h3>$1</h3>")
+        .replace(/^## (.*)$/gm,"<h2>$1</h2>")
+        .replace(/`([^`]+)`/g,"<code>$1</code>")
+        .replace(/^- (.*)$/gm,"<li>$1</li>")
+        .replace(/\n{2,}/g,"<br><br>");
+      document.getElementById("notes").innerHTML = html;
+    });
+  </script>
+</body>
+</html>

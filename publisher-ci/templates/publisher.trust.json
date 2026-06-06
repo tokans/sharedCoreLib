@@ -1,0 +1,46 @@
+{
+  "$comment": "Baked root of trust for this app. Fill in REAL keys. The root is immutable after install and held offline (HSM); operational keys are delegated by it and rotate. See THREAT_MODEL.md §2.",
+  "root": {
+    "keyId": "root-2026",
+    "algo": "ed25519",
+    "publicKeyHex": "REPLACE_WITH_OFFLINE_ROOT_PUBLIC_KEY_HEX",
+    "offline": true,
+    "immutable": true
+  },
+  "delegations": {
+    "data": {
+      "keyId": "data-2026",
+      "algo": "ed25519",
+      "publicKeyHex": "REPLACE_WITH_DATA_SIGNING_PUBLIC_KEY_HEX",
+      "threshold": 1,
+      "signedByRoot": true
+    },
+    "code": {
+      "keyId": "code-2026",
+      "algo": "ed25519",
+      "publicKeyHex": "REPLACE_WITH_CODE_SIGNING_PUBLIC_KEY_HEX",
+      "threshold": 2,
+      "signedByRoot": true
+    },
+    "snapshot": {
+      "keyId": "snapshot-2026",
+      "algo": "ed25519",
+      "publicKeyHex": "REPLACE_WITH_SNAPSHOT_PUBLIC_KEY_HEX",
+      "signedByRoot": true
+    },
+    "timestamp": {
+      "keyId": "timestamp-2026",
+      "algo": "ed25519",
+      "publicKeyHex": "REPLACE_WITH_TIMESTAMP_PUBLIC_KEY_HEX",
+      "signedByRoot": true,
+      "maxExpiryDays": 7
+    }
+  },
+  "feed": {
+    "baseUrl": "https://updates.example.com/suite",
+    "anchorSource": "baked"
+  },
+  "newAppOnboarding": {
+    "requireRootDelegation": true
+  }
+}

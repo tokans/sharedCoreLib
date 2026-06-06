@@ -1,0 +1,7 @@
+{
+  "$comment": "Deliberately broken: no monotonic version, no anti-rollback, snapshot/timestamp disabled.",
+  "monotonicVersion": false,
+  "antiRollback": false,
+  "snapshot": { "enabled": false },
+  "timestamp": { "enabled": false }
+}

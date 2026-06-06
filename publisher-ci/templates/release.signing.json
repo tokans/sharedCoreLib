@@ -1,0 +1,16 @@
+{
+  "$comment": "How this app's release pipeline produces updater metadata. See THREAT_MODEL.md §3.",
+  "monotonicVersion": true,
+  "antiRollback": true,
+  "snapshot": {
+    "enabled": true
+  },
+  "timestamp": {
+    "enabled": true,
+    "expiryDays": 7
+  },
+  "transparencyLog": {
+    "enabled": true,
+    "provider": "rekor"
+  }
+}

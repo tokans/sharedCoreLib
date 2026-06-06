@@ -1,0 +1,9 @@
+{
+  "$comment": "Security policy for the SHARED LIB itself. The lib is a library, not a deployable app, so the app-deployment checks (trust anchor, signing roles, release metadata, exact dependency pinning of peer ranges) are owned by the consuming app and skipped here. What applies to the lib is source hygiene: KDF floor, TLS-only, and the deprecation window. Source is scoped to src/ so the publisher-ci fixtures are not scanned.",
+  "source": { "include": ["src"], "ignore": [] },
+  "skipChecks": ["trust-anchor", "key-separation", "update-metadata", "dependency-pinning", "release-pipeline"],
+  "kdf": { "minPbkdf2Iterations": 600000, "requireFormatHeader": true },
+  "deprecations": "deprecations.json",
+  "deprecationWindow": 3,
+  "failOn": "high"
+}
