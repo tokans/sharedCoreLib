@@ -65,6 +65,18 @@ const countries = getCommonBaked("country");
 const cities = getCommonBaked("city", selectedCountryCode);
 ```
 
+Render the suite-standard publisher attribution in the app's **bottom status bar** (every
+app shows it identically — no per-app wording):
+```tsx
+import { SupportedByTokans } from "sharedcorelib/ui";
+import { openUrl } from "@tauri-apps/plugin-opener";   // route the link through the OS, not the webview
+
+<footer className="...status-bar...">
+  {/* app status content */}
+  <SupportedByTokans className="text-xs opacity-70 hover:underline" onActivate={openUrl} />
+</footer>
+```
+
 ## Stage 9 — demo config skeleton (Tauri driver)
 
 ```ts
@@ -108,6 +120,7 @@ name; override with `--app-name` / `--repo-name` / `--publish-owner`, default ow
 
 - [ ] `npm run build` + `npm run test` green; app builds & runs **standalone** (no sibling installed).
 - [ ] Shared-core bootstrap (`ensure_shared_core`) wired; per-app Argon2 salt set and documented.
+- [ ] `SupportedByTokans` ("Supported by Tokans.org") rendered in the bottom status bar (Tauri `onActivate` opener).
 - [ ] Security gate green; trust anchor filled with real baked keys.
 - [ ] `docs/app-brief.md` + `docs/plan.md` reflect what shipped (and the MVP cut line).
 - [ ] Every feature has a demo GIF.

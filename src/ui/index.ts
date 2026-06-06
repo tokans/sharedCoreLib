@@ -6,6 +6,11 @@
  * with NO Tailwind `content`-config change, because `cn` only merges class strings
  * that originate in the consuming app's own source (which Tailwind already scans).
  *
+ * Beyond `cn`, this exposes the suite-wide **publisher attribution** ("Supported by
+ * Tokans.org") that every app renders in its bottom status bar — see `attribution.tsx`.
+ * It is safe to share because it bakes in NO Tailwind utility classes (the app supplies
+ * the look via `className`), so there is no `content`-config change to make.
+ *
  * NOTE: the heavier UI kit — the shadcn/ui primitives, `AppShell`, and
  * `FiniteSetInput` — is intentionally NOT yet extracted. Moving those into this
  * package requires the consuming app to add this package's source to its Tailwind
@@ -22,3 +27,11 @@ export function cn(...inputs: ClassValue[]): string {
 }
 
 export type { ClassValue };
+
+export {
+  SupportedByTokans,
+  tokansAttribution,
+  SUPPORTED_BY_LABEL,
+  TOKANS_URL,
+  type SupportedByTokansProps,
+} from "./attribution.js";

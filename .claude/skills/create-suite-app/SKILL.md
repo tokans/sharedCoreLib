@@ -135,6 +135,9 @@ Create the app repo as a sibling (`C:\workspace\<appId>`). Wire the shared lib p
   generators+adapters, report templates, ICE fields, sync SPEC). Call the core factories with it.
 - `src-tauri`: thin shell — copy `core_bootstrap.rs` (set `APP_ID`), call `ensure_shared_core`, register
   `shared_core_masters_dir`, and **set the per-app Argon2 salt in `lib.rs` (never change it later)**.
+- App shell: render `SupportedByTokans` from `sharedcorelib/ui` in the **bottom status bar** (every suite
+  app shows the same "Supported by Tokans.org" line) — pass the app's `className` and a Tauri `onActivate`
+  opener so the link opens in the browser, not the webview. See checklists.md → Stage 6 skeleton.
 
 ## Stage 7 — Security gate (publisher-ci)
 

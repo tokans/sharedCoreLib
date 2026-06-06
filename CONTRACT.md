@@ -65,7 +65,7 @@ bundled copy); the lib also lists them as devDeps so it type-checks in isolation
 | `sharedcorelib/report` | `printHtmlAsPdf`, `escapeHtml` | the report HTML templates |
 | `sharedcorelib/ice` | `mentionsContact`, `telHref`, `mailtoHref`, `hasActionableContact`, `CONTACT_PHRASES` | ICE-card fields + disclaimer copy |
 | `sharedcorelib/sync` | `isNewer` (LWW rule), `SyncDb` | the table SPEC + change-set/`Bundle` shape + the merge engine that walks it + the Rust transport (all schema-bound — see §4). Envelope crypto = `sharedcorelib/crypto`. |
-| `sharedcorelib/ui` | `cn`, `ClassValue` | (heavier UI kit deferred — see §4) |
+| `sharedcorelib/ui` | `cn`, `ClassValue`; **publisher attribution**: `SupportedByTokans`, `tokansAttribution`, `SUPPORTED_BY_LABEL`, `TOKANS_URL` | the status-bar `className` (and, in Tauri, an `onActivate` OS opener); heavier UI kit deferred — see §4 |
 | `sharedcorelib/suite` 🟡 *engine implemented* | `createSuiteUpdater(config)` → background daily check (masters + registry + app/self version), verify-at-load + anti-rollback + freshness + native-owned confirm → hot-reload/next-launch; `createAppCatalog(config)` → the **app marketplace** (mobile "More"): list installed + uninstalled apps, install/open-marketing/uninstall/phone-sync; `TrustAnchor`/`DelegatedKey`/`PublishedApp`/`AppLocalState` types + pure helpers (see §7) | baked trust anchor (feed `baseUrl` + root + delegated keys + transport key), `fetchFile`/`now`/lease adapters, installed-version lookups, the native `confirmUpdate(...)`, apply/stage handlers, and for the marketplace the registry + per-app-private local-state adapters + `openExternal` |
 
 Every factory takes a **resolved config object**; there is no module-level state.
@@ -102,12 +102,14 @@ are never shared between apps.
 - **`FeatureGuard`, `LockedFeature`, gate defs** — the gate framework + store
   factory are shared (`/gating`); the locked-state UI, routing, and unlock-in-place
   dialogs are app-specific.
-- **UI kit (shadcn primitives, `AppShell`, `FiniteSetInput`)** — only `cn` is
-  extracted so far. To move the primitives, the consuming app must add this
-  package's source/`dist` to its **Tailwind `content` globs** (otherwise the
-  primitives' utility classes are purged from the app's CSS). `AppShell` needs an
-  injected nav config + theme; `FiniteSetInput` needs the app's master-data hook
-  injected. Tracked as the next UI step.
+- **UI kit (shadcn primitives, `AppShell`, `FiniteSetInput`)** — `cn` and the
+  publisher attribution (`SupportedByTokans`) are extracted so far. To move the
+  primitives, the consuming app must add this package's source/`dist` to its
+  **Tailwind `content` globs** (otherwise the primitives' utility classes are purged
+  from the app's CSS). The attribution avoids this trap by baking in **no** utility
+  classes — the app passes its own `className` — so it needs no `content`-config
+  change. `AppShell` needs an injected nav config + theme; `FiniteSetInput` needs the
+  app's master-data hook injected. Tracked as the next UI step.
 
 ---
 
@@ -225,6 +227,10 @@ conflicts in the shared db" true simultaneously.
    wire `createSuiteUpdater` to run the daily check, and provide the
    `confirmUpdate` callback (§7). Mount the **app marketplace** (`createAppCatalog`) in
    the app's "More" surface so users can discover/install other suite apps (§7.6).
+   Render the **publisher attribution** (`SupportedByTokans` from `sharedcorelib/ui`) in
+   the app's **bottom status bar** — pass the app's own `className`, and in Tauri an
+   `onActivate` wired to the OS opener so `tokans.org` launches in the user's browser,
+   not the webview. This line is suite-standard; every app shows it identically.
 6. Add `sharedcorelib-publisher-ci` as a `devDependency`, run `… init` to scaffold the
    trust manifest + signing config + CI gate + release pipeline, fill in real keys, and
    make `… check` a required CI step (it enforces the THREAT_MODEL.md controls).
