@@ -1,0 +1,41 @@
+{
+  "name": "@form-engine/react",
+  "version": "1.0.0",
+  "description": "Render FormEngineManifest YAML/JSON forms in any React app",
+  "author": "Form Engine Contributors",
+  "license": "MIT",
+  "main": "dist/index.js",
+  "module": "dist/index.esm.js",
+  "types": "dist/index.d.ts",
+  "files": ["dist", "README.md"],
+  "keywords": ["form", "form-engine", "yaml", "react", "dynamic-form", "form-builder"],
+  "peerDependencies": {
+    "react": ">=18",
+    "react-dom": ">=18"
+  },
+  "scripts": {
+    "build": "tsup src/index.ts --format cjs,esm --dts",
+    "dev": "tsup src/index.ts --format cjs,esm --dts --watch",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "type-check": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "tsup": "^8.0.0",
+    "typescript": "^5",
+    "@types/react": "^18",
+    "@types/react-dom": "^18",
+    "react": "^18",
+    "react-dom": "^18",
+    "vitest": "^2.0.5",
+    "jsdom": "^24.1.1",
+    "@testing-library/react": "^16.0.0",
+    "@testing-library/jest-dom": "^6.4.6"
+  },
+  "dependencies": {
+    "clsx": "^2.1.1",
+    "tailwind-merge": "^2.4.0",
+    "zustand": "^4.5.4",
+    "yaml": "^2.4.5"
+  }
+}

@@ -35,3 +35,4 @@ export {
   TOKANS_URL,
   type SupportedByTokansProps,
 } from "./attribution.js";
+export { TOKANS_LOGO_DATA_URI } from "./tokansLogo.js";
