@@ -68,6 +68,91 @@ export async function verifyGrant(fileBytes: Uint8Array, keys: GrantKeys): Promi
   return JSON.parse(textDecode(plain));
 }
 
+// ── Promise-card credit model (Phase 6) ─────────────────────────────────────
+// A promise card is a money-denominated, expiring, IDENTITY-BOUND credit minted only for a
+// NON-anonymous donation, redeemable against either paid product (myWorkAssistant /
+// myLifeAssistant). It is an offline ed25519-signed grant payload (verified via verifyGrant)
+// and supports partial DRAW-DOWN against a local redemption ledger.
+
+export type PaidProduct = "myworkassistant" | "mylifeassistant";
+
+/** The decrypted promise-card payload (carried inside a signed {@link GrantEnvelope}). */
+export interface PromiseCard {
+  v: 1;
+  kind: "promise-card";
+  /** Unique card id (also the redemption-ledger key). */
+  cardId: string;
+  /**
+   * Identity this card is bound to — a non-reversible handle for the non-anonymous donor
+   * (e.g. an account id or an email hash). A card with no `identity` is INVALID (anonymous
+   * donations don't get promise cards).
+   */
+  identity: string;
+  currency: string;
+  /** Face value in minor units (paise/cents). */
+  amountMinor: number;
+  issuedAt: string;
+  /** ISO expiry; the card is unusable at/after this instant. */
+  expiresAt: string;
+  /** Which paid products it may be drawn against. */
+  products: PaidProduct[];
+}
+
+/** Validate/narrow a decrypted payload into a {@link PromiseCard}. Throws on any mismatch. */
+export function parsePromiseCard(raw: unknown): PromiseCard {
+  const c = raw as Partial<PromiseCard>;
+  if (c?.v !== 1 || c.kind !== "promise-card") throw new Error("not a promise card");
+  if (!c.cardId || !c.identity) throw new Error("promise card must be identity-bound (non-anonymous)");
+  if (!c.currency || typeof c.amountMinor !== "number" || c.amountMinor <= 0) throw new Error("promise card needs a positive amount");
+  if (!c.expiresAt || !Array.isArray(c.products) || !c.products.length) throw new Error("promise card needs an expiry and products");
+  return c as PromiseCard;
+}
+
+export function isCardExpired(card: PromiseCard, nowIso: string): boolean {
+  return Date.parse(nowIso) >= Date.parse(card.expiresAt);
+}
+
+/** A prior draw against a card (the local, per-device redemption ledger). */
+export interface CardDraw { cardId: string; amountMinor: number; product: PaidProduct; at: string }
+
+/** Remaining balance after applying the ledger's prior draws for this card. */
+export function cardBalance(card: PromiseCard, draws: CardDraw[]): number {
+  const spent = draws.filter((d) => d.cardId === card.cardId).reduce((s, d) => s + d.amountMinor, 0);
+  return Math.max(0, card.amountMinor - spent);
+}
+
+export interface RedeemCheck { ok: boolean; reason?: string; balanceMinor: number }
+
+/**
+ * Can `amountMinor` be drawn now? Enforces identity binding, expiry, product applicability,
+ * and sufficient remaining balance. Pure — the caller persists the draw on `ok`.
+ */
+export function checkRedeem(
+  card: PromiseCard, draws: CardDraw[],
+  opts: { product: PaidProduct; amountMinor: number; nowIso: string; identity: string },
+): RedeemCheck {
+  const balanceMinor = cardBalance(card, draws);
+  if (card.identity !== opts.identity) return { ok: false, reason: "identity mismatch", balanceMinor };
+  if (isCardExpired(card, opts.nowIso)) return { ok: false, reason: "expired", balanceMinor };
+  if (!card.products.includes(opts.product)) return { ok: false, reason: "product not eligible", balanceMinor };
+  if (opts.amountMinor <= 0) return { ok: false, reason: "non-positive amount", balanceMinor };
+  if (opts.amountMinor > balanceMinor) return { ok: false, reason: "insufficient balance", balanceMinor };
+  return { ok: true, balanceMinor };
+}
+
+/**
+ * Offline-verify a promise-card file (ed25519 over ciphertext, then decrypt + shape-check)
+ * and confirm it is redeemable now. No network. Returns the card + the check, or throws if
+ * the signature/shape is invalid (so a forged card never validates).
+ */
+export async function verifyPromiseCard(
+  fileBytes: Uint8Array, keys: GrantKeys,
+  opts: { product: PaidProduct; amountMinor: number; nowIso: string; identity: string; draws?: CardDraw[] },
+): Promise<{ card: PromiseCard; check: RedeemCheck }> {
+  const card = parsePromiseCard(await verifyGrant(fileBytes, keys));
+  return { card, check: checkRedeem(card, opts.draws ?? [], opts) };
+}
+
 export interface GrantReceiverConfig<TPayload> extends GrantKeys {
   /** Validate/narrow the decrypted payload (e.g. a zod schema's `.parse`). Throws on mismatch. */
   parsePayload: (raw: unknown) => TPayload;

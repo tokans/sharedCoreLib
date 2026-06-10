@@ -15,6 +15,8 @@
 import { create, type StoreApi, type UseBoundStore } from "zustand";
 import { isTauri } from "../env/index.js";
 
+export * from "./featureGuard.js";
+
 /** A progressively-unlocked feature, gated on a boolean predicate over the app's flags. */
 export interface FeatureGate<TFlags, K extends string = string> {
   key: K;
@@ -33,6 +35,55 @@ export interface FeatureGate<TFlags, K extends string = string> {
 /** Convenience predicate mirroring `gate.isUnlocked(flags)`. */
 export function isFeatureUnlocked<TFlags>(gate: FeatureGate<TFlags>, flags: TFlags): boolean {
   return gate.isUnlocked(flags);
+}
+
+// ── Person-linked reveal state (Phase 6 — multi-user substrate) ──────────────
+// Tier/reveal state is keyed by (user, app) so multi-user works: each person reveals the
+// ladder independently. Single-user free = the one primary user (`"self"`). The key is the
+// stable storage/namespacing handle for a person's reveal state in an app.
+
+/** Canonical for the single primary user; every app agrees on this when not multi-user. */
+export const PRIMARY_USER_KEY = "self";
+
+/** Namespaced reveal-state key for (user, app[, gate]) — never collide across people/apps. */
+export function revealKey(userKey: string, appId: string, gateKey?: string): string {
+  const base = `reveal:${userKey}:${appId}`;
+  return gateKey ? `${base}:${gateKey}` : base;
+}
+
+// ── Nudge (Phase 6) — one dismissible cross-sell at the top of the free ladder ──
+
+export type Tier = "free" | "registered" | "patron" | "paid";
+
+export interface NudgeContext {
+  /** True once the user has revealed every FREE feature by usage (top of the ladder). */
+  atTopOfFreeLadder: boolean;
+  tier: Tier;
+  /** Has this person already dismissed the nudge? (Person-linked.) */
+  dismissed: boolean;
+}
+
+export interface Nudge {
+  target: string;   // target app id (e.g. "mylifeassistant")
+  title: string;
+  body: string;
+  ctaLabel: string;
+}
+
+/**
+ * Pick the single nudge to show, or null. Rules: only at the top of the free ladder, only
+ * for a non-paid user who hasn't dismissed it, only when the target app exists in the suite
+ * catalog and isn't already installed. Exactly one, dismissible — never nag.
+ */
+export function pickNudge(
+  ctx: NudgeContext,
+  opts: { target: Nudge; catalogHas: (appId: string) => boolean; installed: (appId: string) => boolean },
+): Nudge | null {
+  if (ctx.dismissed) return null;
+  if (ctx.tier === "paid") return null;
+  if (!ctx.atTopOfFreeLadder) return null;
+  if (!opts.catalogHas(opts.target.target) || opts.installed(opts.target.target)) return null;
+  return opts.target;
 }
 
 export interface GatingStoreConfig<TFlags extends object> {

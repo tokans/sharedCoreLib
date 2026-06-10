@@ -1,6 +1,10 @@
 import { describe, it, expect, beforeAll } from "vitest";
 import { signAsync, getPublicKeyAsync, etc } from "@noble/ed25519";
-import { verifyGrant, createGrantReceiver, type GrantKeys } from "./index.js";
+import {
+  verifyGrant, createGrantReceiver, type GrantKeys,
+  parsePromiseCard, isCardExpired, cardBalance, checkRedeem, verifyPromiseCard,
+  type PromiseCard, type CardDraw,
+} from "./index.js";
 
 const ENC = new TextEncoder();
 let priv: Uint8Array;
@@ -67,5 +71,49 @@ describe("receive-only grant handoff", () => {
     const receiver = createGrantReceiver({ ...keys, parsePayload: (r) => r });
     expect(await receiver.fromFile()).toBeNull();   // no readDroppedFile adapter
     expect(await receiver.fromToken("x")).toBeNull(); // no fetchByToken adapter
+  });
+});
+
+describe("promise-card credit model", () => {
+  const card: PromiseCard = {
+    v: 1, kind: "promise-card", cardId: "card-1", identity: "acct-hash-xyz",
+    currency: "INR", amountMinor: 50000, issuedAt: "2026-06-01", expiresAt: "2027-06-01",
+    products: ["myworkassistant", "mylifeassistant"],
+  };
+
+  it("parsePromiseCard rejects anonymous / malformed cards", () => {
+    expect(() => parsePromiseCard({ ...card, identity: "" })).toThrow(/identity-bound/);
+    expect(() => parsePromiseCard({ ...card, amountMinor: 0 })).toThrow(/positive/);
+    expect(() => parsePromiseCard({ kind: "patron" })).toThrow(/not a promise card/);
+    expect(parsePromiseCard(card)).toEqual(card);
+  });
+
+  it("expiry + balance + draw-down", () => {
+    expect(isCardExpired(card, "2026-12-01")).toBe(false);
+    expect(isCardExpired(card, "2027-06-01")).toBe(true);
+    const draws: CardDraw[] = [{ cardId: "card-1", amountMinor: 20000, product: "myworkassistant", at: "2026-07-01" }];
+    expect(cardBalance(card, draws)).toBe(30000);
+  });
+
+  it("checkRedeem enforces identity, expiry, product, and balance", () => {
+    const base = { product: "mylifeassistant" as const, amountMinor: 10000, nowIso: "2026-12-01", identity: "acct-hash-xyz" };
+    expect(checkRedeem(card, [], base).ok).toBe(true);
+    expect(checkRedeem(card, [], { ...base, identity: "someone-else" }).reason).toBe("identity mismatch");
+    expect(checkRedeem(card, [], { ...base, nowIso: "2027-07-01" }).reason).toBe("expired");
+    expect(checkRedeem({ ...card, products: ["myworkassistant"] }, [], base).reason).toBe("product not eligible");
+    expect(checkRedeem(card, [], { ...base, amountMinor: 99999 }).reason).toBe("insufficient balance");
+  });
+
+  it("verifyPromiseCard verifies a signed card offline and reports redeemability", async () => {
+    const bytes = await makeGrant(card);
+    const { card: verified, check } = await verifyPromiseCard(bytes, keys, {
+      product: "mylifeassistant", amountMinor: 10000, nowIso: "2026-12-01", identity: "acct-hash-xyz",
+    });
+    expect(verified.cardId).toBe("card-1");
+    expect(check.ok).toBe(true);
+    // a forged/tampered card fails signature verification
+    await expect(verifyPromiseCard(await makeGrant(card), { ...keys, pubkeyHex: "00".repeat(32) }, {
+      product: "mylifeassistant", amountMinor: 1, nowIso: "2026-12-01", identity: "acct-hash-xyz",
+    })).rejects.toBeTruthy();
   });
 });
