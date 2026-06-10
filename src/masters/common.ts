@@ -18,10 +18,12 @@
  * read from the shared store — see CONTRACT.md §5).
  */
 import type { MasterOption } from "./index.js";
-import countries from "./data/countries.json";
-import currencies from "./data/currencies.json";
-import relationships from "./data/relationships.json";
-import citiesSeed from "./data/cities.seed.json";
+// JSON import attributes (`with { type: "json" }`) are REQUIRED for Node strict-ESM consumers
+// at runtime; without them Node rejects the bare JSON import (it only worked under bundlers).
+import countries from "./data/countries.json" with { type: "json" };
+import currencies from "./data/currencies.json" with { type: "json" };
+import relationships from "./data/relationships.json" with { type: "json" };
+import citiesSeed from "./data/cities.seed.json" with { type: "json" };
 
 /** Reserved scope for core-owned reference data shared by every app. */
 export const COMMON_SCOPE = "common";
