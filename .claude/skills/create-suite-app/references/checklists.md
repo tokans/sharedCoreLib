@@ -65,16 +65,42 @@ const countries = getCommonBaked("country");
 const cities = getCommonBaked("city", selectedCountryCode);
 ```
 
-Render the suite-standard publisher attribution in the app's **bottom status bar** (every
-app shows it identically — no per-app wording):
+Use the shared **`AppHarness`** as the app shell (it renders the suite-standard "Supported by
+Tokans.org" attribution in its footer automatically — no per-app wording). One harness drives both
+the desktop sidebar and the mobile bottom-bar via an orientation-aware `nav` render-fn:
 ```tsx
-import { SupportedByTokans } from "sharedcorelib/ui";
-import { openUrl } from "@tauri-apps/plugin-opener";   // route the link through the OS, not the webview
+import { AppHarness, useViewportWidth, DEFAULT_THEME } from "sharedcorelib/ui";
+import { openUrl } from "@tauri-apps/plugin-opener";   // route external links through the OS, not the webview
+import { Outlet, useNavigate } from "react-router-dom";
 
-<footer className="...status-bar...">
-  {/* app status content */}
-  <SupportedByTokans className="text-xs opacity-70 hover:underline" onActivate={openUrl} />
-</footer>
+export function Shell() {
+  const width = useViewportWidth();          // SSR-safe (returns 1024 before mount)
+  const navigate = useNavigate();
+  return (
+    <AppHarness
+      width={width}
+      theme={{ ...DEFAULT_THEME, "color-accent": "#2563eb" /* brand */ }}
+      chrome={{
+        tier,                                  // from the tier store; Patron shows only at tier ≥ 2
+        onPatron: () => setDonateOpen(true),
+        onSettings: () => navigate("/settings"),
+        onMarketplace: () => navigate("/suite"),   // marketplace page built on sharedcorelib/suite createAppCatalog
+        onExternal: (href) => void openUrl(href),
+      }}
+      slots={{
+        nav: (ctx) => (ctx.orientation === "horizontal" ? <Sidebar /> : <BottomBar />),
+        main: <Outlet />,
+      }}
+    />
+  );
+}
+```
+Gate a route's content with the shared, person-linked guard — the app supplies only the locked UI:
+```tsx
+import { FeatureGuard } from "sharedcorelib/gating";
+<FeatureGuard gate={FEATURE_GATES.tax} flags={gating} renderLocked={(g) => <LockedFeature gate={g} />}>
+  <TaxPage />
+</FeatureGuard>
 ```
 
 ## Stage 6 — shared suite DB wiring skeleton
@@ -149,7 +175,9 @@ name; override with `--app-name` / `--repo-name` / `--publish-owner`, default ow
 
 - [ ] `npm run build` + `npm run test` green; app builds & runs **standalone** (no sibling installed).
 - [ ] Shared-core bootstrap (`ensure_shared_core`) wired; per-app Argon2 salt set and documented.
-- [ ] `SupportedByTokans` ("Supported by Tokans.org") rendered in the bottom status bar (Tauri `onActivate` opener).
+- [ ] App shell uses `AppHarness` (orientation-aware nav, theme tokens, SSR-safe); it renders the
+      "Supported by Tokans.org" attribution in its footer (Tauri `onExternal` opener). Gated routes use
+      the shared person-linked `FeatureGuard`; shared entities read/written via `sharedcorelib/entities`.
 - [ ] Security gate green; trust anchor filled with real baked keys.
 - [ ] `docs/app-brief.md` + `docs/plan.md` reflect what shipped (and the MVP cut line).
 - [ ] Every feature has a demo GIF.

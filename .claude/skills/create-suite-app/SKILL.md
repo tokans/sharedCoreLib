@@ -84,9 +84,13 @@ ctaLabel, ctaTo? }`. Then define:
 - `unlockedAll` — the all-unlocked flags used in a browser/dev preview so previews aren't locked.
 - `override` — pass `() => hasPatronAccess(tierCtx)` so a **Patron/Partner unlocks every feature**.
 
-Cross-check tiers ↔ gates: a gate may be "unlocked at tier X". Keep the **locked-state UI**
-(`FeatureGuard`, routing, unlock-in-place dialogs) in the app — only the gate framework + store are
-shared. Record the gate table: feature → predicate → unlock hint.
+Cross-check tiers ↔ gates: a gate may be "unlocked at tier X". `FeatureGuard` is now **shared**
+(`sharedcorelib/gating`, SSR-safe + **person-linked** — keyed by `(user, app)` via `revealKey`, so
+multi-user reveals per person; single-user free = `PRIMARY_USER_KEY` = `"self"`). Wrap gated routes in
+`<FeatureGuard gate={…} flags={…} renderLocked={…} renderLoading={…}>`; the app supplies only the
+**locked-state UI** (CTA, routing, unlock-in-place dialog) as those render props. Add the top-of-ladder
+**nudge** to myLifeAssistant via `pickNudge(ctx, { target, catalogHas, installed })`. Record the gate
+table: feature → predicate → unlock hint.
 
 ## Stage 4 — Masters, reminders, reports, ICE, sync (pick what applies)
 
@@ -100,8 +104,16 @@ For each shared subsystem the app uses, capture the app-supplied config (see CON
   adapters (`syncDerived`/`listOpen`/`markFired`). The scheduling math is shared.
 - **Report** — which printable artifacts exist (HTML templates the app owns; printing is shared).
 - **ICE** — does the app carry emergency-contact data? If so, define the card fields + disclaimer.
-- **Sync** — does it sync device-to-device? If yes, capture the table SPEC; the LWW kernel + envelope
-  crypto are shared, the merge engine + transport stay in-app.
+- **Sync** — does it sync device-to-device? If yes, the **merge engine is now shared**
+  (`sharedcorelib/sync` `createMergeEngine` — per-app-scoped by table ownership, owned + `common`
+  only). Inject the schema `registry` + `appId` + `localDeviceId`; the app provides ONLY the Rust LAN
+  byte-pipe as the `SyncTransport` (+ any blob/credential re-seal hook at the call site). **Do not
+  write a local `merge.ts`.** Free, gated to Registered.
+- **Shared entities** (`sharedcorelib/entities`) — does the app touch people, dated events, documents,
+  or owned assets? Read/write them through `createEntitiesStore` (the `person`/`event`/`document`/`asset`
+  spine) — **never re-model these locally** (invariant 6). Attach app-specific data as a **facet** table
+  keyed by `person_key`. Use `pickOrCreatePerson` (explicit-reference, no auto-merge) + `suggestDuplicates`
+  for guided merge. Register `ENTITY_SCHEMAS` once via `registerSchemas`.
 - **Data schema** (`sharedcorelib/schema`) — declare every table as a **semantic**
   `SchemaDescriptor` in `schema.manifest.json`: purpose + confidentiality, and per field its
   dataType, constraints, purpose, confidentiality, and DPDP `personalData` (personal data must
@@ -152,9 +164,17 @@ Create the app repo as a sibling (`C:\workspace\<appId>`). Wire the shared lib p
   `createSharedDb({ appId, grantedLevel, registry })`. See myFinance `src/db/sharedDb.ts` + `schemas.ts`
   for the reference wiring. Keep `schema.manifest.json` (scaffolded by `publisher-ci init`) in sync with
   `APP_SCHEMAS`.
-- App shell: render `SupportedByTokans` from `sharedcorelib/ui` in the **bottom status bar** (every suite
-  app shows the same "Supported by Tokans.org" line) — pass the app's `className` and a Tauri `onActivate`
-  opener so the link opens in the browser, not the webview. See checklists.md → Stage 6 skeleton.
+- App shell: use the shared **`AppHarness`** (`sharedcorelib/ui`) as the responsive shell — don't
+  hand-roll an `AppShell`. Wire it per CONTRACT.md §4.1:
+  - `width={useViewportWidth()}` (SSR-safe), router `<Outlet/>` as the `main` slot.
+  - `nav` as an **orientation-aware render-fn**: `(ctx) => ctx.orientation === "horizontal" ? <Sidebar/> : <BottomBar/>`.
+  - `chrome={{ tier, onPatron, onSettings, onMarketplace, onExternal, labels }}` — Patron shows from
+    tier 2; `onMarketplace` opens the marketplace page (Stage 7c); `SupportedByTokans` renders in the
+    footer automatically (pass `onExternal` = Tauri opener so the link opens in the browser).
+  - `theme={{ ...DEFAULT_THEME, ...brand }}` — tokens become `--<token>` CSS vars (no Tailwind
+    `content` change needed; the harness bakes no utilities). The shell is **SSR-safe** for a web target.
+  - Wire core **`recovery`** (free local RK + Registered escrow) and the per-app **usage reveal ladder**
+    (person-linked `FeatureGuard` + nudge) here too. See checklists.md → Stage 6 skeleton.
 
 ## Stage 7 — Security gate (publisher-ci)
 

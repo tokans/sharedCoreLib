@@ -67,7 +67,7 @@ bundled copy); the lib also lists them as devDeps so it type-checks in isolation
 | `sharedcorelib/report` | `printHtmlAsPdf`, `escapeHtml` | the report HTML templates |
 | `sharedcorelib/ice` | `mentionsContact`, `telHref`, `mailtoHref`, `hasActionableContact`, `CONTACT_PHRASES` | ICE-card fields + disclaimer copy |
 | `sharedcorelib/sync` | `isNewer` (LWW rule), `SyncDb`; **per-app-scoped merge engine** (promoted from apps): `createMergeEngine`/`syncableTables`/`buildBundle`/`applyBundle`/`SyncTransport` — syncs only owned + `common` tables (receive-side scoped). Apps delete their local `merge.ts` | the schema `registry` + `appId` + `localDeviceId`; the Rust LAN transport as the injected `SyncTransport`. Envelope crypto = `sharedcorelib/crypto`. |
-| `sharedcorelib/ui` | `cn`, `ClassValue`; **publisher attribution**: `SupportedByTokans`, `tokansAttribution`, `SUPPORTED_BY_LABEL`, `TOKANS_URL`, `TOKANS_LOGO_DATA_URI`; **responsive harness**: `AppHarness` (slots `nav`/`main`/`side`/`footer`, horizontal↔vertical via `pickOrientation`, tier-gated chrome via `chromeActions`, `themeStyle` tokens) — SSR-safe, purge-safe | the status-bar `className` (+ Tauri `onActivate` opener); for the harness: `width` from the app's observer, slot content, `HarnessChrome` actions, theme tokens; heavier UI kit deferred — see §4 |
+| `sharedcorelib/ui` | `cn`, `ClassValue`; **publisher attribution**: `SupportedByTokans`, `tokansAttribution`, `SUPPORTED_BY_LABEL`, `TOKANS_URL`, `TOKANS_LOGO_DATA_URI`; **responsive harness** (the app shell apps migrate onto — see §4.1): `AppHarness` (slots `nav`/`main`/`side`/`footer`, each a node or orientation-aware render-fn; horizontal↔vertical via `pickOrientation`; `verticalNavPosition`; tier-gated chrome via `chromeActions`), `useViewportWidth` (SSR-safe), `themeStyle`/`DEFAULT_THEME`/`SuiteThemeToken` (theme-token vocabulary) — SSR-safe, purge-safe | for the harness: `width` (from `useViewportWidth`), slot content, `HarnessChrome` actions (Settings/Patron/Marketplace/external), theme tokens; **primitive** UI kit (`FiniteSetInput`, shadcn primitives) still deferred — see §4 |
 | `sharedcorelib/entities` | `createEntitiesStore`, `ENTITY_SCHEMAS`, `personKeyFor`; the `person`/`event`/`document`/`asset` spine (all `owner:"common"`) — identity-only `person` + per-app facets, dormant `PersonRelationship` edges, **explicit-reference identity** (`pickOrCreatePerson`, no auto-merge), `suggestDuplicates`, `assetsForOwner`. **Contract:** `contracts/entities.md` | an injected `SqlDb` + `appId`. Read/write the spine via this — never re-model it (invariant 6) |
 | `sharedcorelib/recovery` | `generateRecoveryKey`, `wrapMasterKey`/`unwrapMasterKey`, `createRecovery` (local + zero-knowledge escrow + re-key), Shamir `splitSecret`/`combineShares`/`splitRecoveryKey`; `RecoveryBlobStore`/`EscrowClient`/`WrappedKey` | a local `RecoveryBlobStore`; optional registered-tier `EscrowClient`. RK is user-held, never vendor-held |
 | `sharedcorelib/breakglass` | `BreakGlassContributor` (frozen contributor interface), `buildSnapshot` (tier redaction), `generateRecipientPassphrase`, `wrapSlice`/`openSlice` (zero-knowledge slice + license-free reader), `isReleaseEligible`, `BREAKGLASS_SCHEMAS`/`createBreakGlassLedger`, `BreakGlassEscrow`. **Contract:** `contracts/breakglass.md` | each app's `BreakGlassContributor` (does its own redaction); an injected `SqlDb`; a `BreakGlassEscrow` (release gated by `account` 2FA) |
@@ -100,24 +100,52 @@ are never shared between apps.
   prompt's explicit stretch goal. Each app keeps a thin `src-tauri` that wires the
   plugins + its own sync transport; the TS sync KERNEL (`isNewer`, `SyncDb`) +
   envelope crypto (`/crypto`) are shared.
-- **Sync merge engine** — `applyBundle` is bound to each app's table SPEC,
-  identity kinds, FK graph, tombstone keys, and per-table special cases (blob
-  re-seal, credential restore). Generalising it means injecting the full SPEC +
-  hooks; until a second app needs it, the kernel + crypto are the shared parts.
+- **Sync merge engine** — ✅ **promoted into core** (Phase 6). `sharedcorelib/sync` now
+  ships `createMergeEngine`/`syncableTables`/`buildBundle`/`applyBundle`, a generic LWW engine
+  that walks the schema registry and is **scoped per app** by table ownership (owned + `common`
+  only). Apps **delete their local `src/sync/merge.ts`** and inject the Rust LAN byte-pipe as the
+  `SyncTransport`. What remains in-app: only the native transport + any app-specific blob/credential
+  re-seal hooks at the call site.
 - **Launch telemetry** — recording launches / counting distinct days is DB-bound
   (app SQLite, an app migration). The shared part is the **tier ladder resolution**
   (`/tiers`); the telemetry that feeds the tier context stays per-app.
-- **`FeatureGuard`, `LockedFeature`, gate defs** — the gate framework + store
-  factory are shared (`/gating`); the locked-state UI, routing, and unlock-in-place
-  dialogs are app-specific.
-- **UI kit (shadcn primitives, `AppShell`, `FiniteSetInput`)** — `cn` and the
-  publisher attribution (`SupportedByTokans`) are extracted so far. To move the
-  primitives, the consuming app must add this package's source/`dist` to its
-  **Tailwind `content` globs** (otherwise the primitives' utility classes are purged
-  from the app's CSS). The attribution avoids this trap by baking in **no** utility
-  classes — the app passes its own `className` — so it needs no `content`-config
-  change. `AppShell` needs an injected nav config + theme; `FiniteSetInput` needs the
-  app's master-data hook injected. Tracked as the next UI step.
+- **`FeatureGuard` gate defs / locked-state UI** — ✅ **`FeatureGuard` promoted into core**
+  (Phase 6, SSR-safe, person-linked). The gate framework + store factory + `FeatureGuard` are now
+  shared (`/gating`); the app still supplies its gate definitions + copy and the `renderLocked`
+  /`renderLoading` UI (routing + unlock-in-place dialogs stay app-specific, injected as render props).
+- **App shell / responsive layout** — ✅ **promoted into core as `AppHarness`** (`/ui`, Phase 6).
+  The suite's responsive shell (slots + chrome + theming + horizontal↔vertical transform) that apps
+  migrate their bespoke `AppShell` onto. See **§4.1**.
+- **UI primitive kit (shadcn primitives, `FiniteSetInput`)** — still in-app. `cn`, the publisher
+  attribution, the `AppHarness` shell, and `FeatureGuard` are extracted (none bake Tailwind
+  utilities, so no `content`-config change is needed to adopt them). Moving the **primitives**
+  (Button/Input/Dialog/…) and `FiniteSetInput` is the remaining UI step: the consuming app must add
+  this package's source/`dist` to its **Tailwind `content` globs** (else the primitives' utility
+  classes are purged), and `FiniteSetInput` needs the app's master-data hook injected. Tracked as
+  the next UI step.
+
+### 4.1 Migrating an app's `AppShell` → `AppHarness`
+
+`AppHarness` (`sharedcorelib/ui`) is the suite's responsive shell. To migrate:
+
+1. **Feed width** — `const width = useViewportWidth();` (SSR-safe; returns 1024 before mount).
+2. **Inject slots** — `nav` / `main` / `side` / `footer`. Each slot may be a node **or** a render-fn
+   `(ctx) => node` receiving `{ orientation, width }`, so one harness renders a **desktop sidebar**
+   and a **mobile bottom-bar**: `nav: (ctx) => ctx.orientation === "horizontal" ? <Sidebar/> : <BottomBar/>`.
+   `verticalNavPosition` ("top"|"bottom", default "bottom") places the nav in the mobile column.
+   Pass the router `<Outlet/>` as `main`.
+3. **Wire chrome** — `chrome={{ tier, onPatron, onSettings, onMarketplace, onExternal, labels }}`.
+   Patron shows only from `tier ≥ 2`. `onMarketplace` opens the app's marketplace page (built on
+   `sharedcorelib/suite` `createAppCatalog`); the harness only triggers it. `SupportedByTokans` is
+   rendered automatically in the footer (pass `onExternal` for the Tauri OS opener).
+4. **Theme** — `theme={{ ...DEFAULT_THEME, "color-accent": "#…" }}`; tokens land as `--<token>` CSS
+   custom properties (see `SuiteThemeToken` for the shared vocabulary). The harness bakes **no**
+   utility classes — style via the app's own `className`s + these tokens (no Tailwind `content` change).
+5. **SSR/web** — the harness never touches `window` at import or render, so the paid apps' web target
+   can `renderToString` it (proven in `ui/harness.test.ts`).
+
+The contract is tight on purpose: **four fixed slots + one config object**. App-specific nav items,
+bottom-sheets, dialogs, and the locked-feature UI live in the slot/render-prop content, not the harness.
 
 ---
 

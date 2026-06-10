@@ -37,6 +37,8 @@ export {
 } from "./attribution.js";
 export { TOKANS_LOGO_DATA_URI } from "./tokansLogo.js";
 export {
-  AppHarness, pickOrientation, themeStyle, chromeActions,
-  type Orientation, type ThemeTokens, type HarnessChrome, type AppHarnessProps,
+  AppHarness, pickOrientation, useViewportWidth, themeStyle, chromeActions,
+  DEFAULT_THEME,
+  type Orientation, type ThemeTokens, type SuiteThemeToken,
+  type HarnessChrome, type AppHarnessProps, type HarnessSlot, type HarnessRenderContext,
 } from "./harness.js";
