@@ -205,6 +205,7 @@ export type ConflictKind =
   | "confidentiality-downgrade"
   | "personal-data-mismatch"
   | "relationship-mismatch"
+  | "owner-mismatch"
   | "duplicate-candidate";
 
 export interface SchemaConflict {
@@ -242,6 +243,12 @@ export function compareSchema(existing: SchemaDescriptor, proposed: SchemaDescri
 
   if (existing.schemaType !== proposed.schemaType) {
     conflicts.push({ kind: "schema-kind-mismatch", schema: q, detail: `${existing.schemaType} vs ${proposed.schemaType}` });
+  }
+  // A registered table belongs to exactly one owner. A different app re-registering the
+  // same qualified name is cross-app table duplication (even if the shape matches) — block
+  // it so two apps can never silently claim/redefine the same physical table.
+  if (existing.owner !== proposed.owner) {
+    conflicts.push({ kind: "owner-mismatch", schema: q, detail: `owned by ${existing.owner}, ${proposed.owner} may not redefine it` });
   }
   if (confRank(proposed.confidentiality) < confRank(existing.confidentiality)) {
     conflicts.push({ kind: "confidentiality-downgrade", schema: q, detail: `${existing.confidentiality} → ${proposed.confidentiality}` });

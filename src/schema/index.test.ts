@@ -92,4 +92,21 @@ describe("checkAgainstRegistry + mergeIntoRegistry", () => {
     const res = checkAgainstRegistry([dup], registry);
     expect(res.duplicateCandidates.some((d) => d.kind === "duplicate-candidate")).toBe(true);
   });
+
+  it("rejects a different app re-registering an owned table (cross-app dup table name)", () => {
+    // Same qualified name (myfinance#Account) but a different owner claiming it — even with
+    // an identical shape this must be a hard conflict, not a silent 'identical' merge.
+    const claim = base({ owner: "myhealth" });
+    const res = checkAgainstRegistry([claim], registry);
+    expect(res.hasConflicts).toBe(true);
+    expect(res.entries[0]!.conflicts.some((c) => c.kind === "owner-mismatch")).toBe(true);
+    expect(() => mergeIntoRegistry(registry, [claim])).toThrow(/schema conflict/);
+  });
+
+  it("same owner re-registering its own table additively still merges (no false owner-mismatch)", () => {
+    const evolved = base({ fields: [...base().fields, { name: "currency", dataType: "string" }] });
+    const res = checkAgainstRegistry([evolved], registry);
+    expect(res.hasConflicts).toBe(false);
+    expect(res.entries[0]!.status).toBe("mergeable");
+  });
 });

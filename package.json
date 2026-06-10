@@ -33,6 +33,26 @@
       "types": "./dist/schema/index.d.ts",
       "import": "./dist/schema/index.js"
     },
+    "./entities": {
+      "types": "./dist/entities/index.d.ts",
+      "import": "./dist/entities/index.js"
+    },
+    "./recovery": {
+      "types": "./dist/recovery/index.d.ts",
+      "import": "./dist/recovery/index.js"
+    },
+    "./breakglass": {
+      "types": "./dist/breakglass/index.d.ts",
+      "import": "./dist/breakglass/index.js"
+    },
+    "./account": {
+      "types": "./dist/account/index.d.ts",
+      "import": "./dist/account/index.js"
+    },
+    "./pii": {
+      "types": "./dist/pii/index.d.ts",
+      "import": "./dist/pii/index.js"
+    },
     "./db": {
       "types": "./dist/db/index.d.ts",
       "import": "./dist/db/index.js"
