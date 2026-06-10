@@ -1,0 +1,13 @@
+[
+  {
+    "namespace": "fixture",
+    "name": "Person",
+    "schemaType": "Table",
+    "confidentiality": "Public",
+    "owner": "fixture-failing-app",
+    "fields": [
+      { "name": "id", "dataType": "number", "keyField": true },
+      { "name": "pan", "dataType": "string", "personalData": true }
+    ]
+  }
+]

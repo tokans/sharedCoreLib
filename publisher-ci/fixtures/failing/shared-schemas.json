@@ -1,0 +1,13 @@
+[
+  {
+    "namespace": "fixture",
+    "name": "Person",
+    "schemaType": "Table",
+    "confidentiality": "Confidential",
+    "owner": "other-app",
+    "fields": [
+      { "name": "id", "dataType": "id", "keyField": true },
+      { "name": "pan", "dataType": "string", "personalData": true, "purpose": "KYC" }
+    ]
+  }
+]

@@ -61,6 +61,7 @@ function cmdInit(appDir, flags) {
   writeIfAbsent("publisher.trust.json", "publisher.trust.json");
   writeIfAbsent("release.signing.json", "release.signing.json");
   writeIfAbsent("deprecations.json", "deprecations.json");
+  writeIfAbsent("schema.manifest.json", "schema.manifest.json");
   writeIfAbsent("github-actions.yml", ".github/workflows/security.yml");
 
   // Cross-account release pipeline (publish builds + gh-pages to the publisher account).

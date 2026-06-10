@@ -1,0 +1,14 @@
+[
+  {
+    "namespace": "fixture",
+    "name": "Note",
+    "schemaType": "Table",
+    "confidentiality": "Internal",
+    "owner": "fixture-passing-app",
+    "purpose": "User notes attached to records.",
+    "fields": [
+      { "name": "id", "dataType": "id", "keyField": true },
+      { "name": "text", "dataType": "string", "description": "the note body" }
+    ]
+  }
+]

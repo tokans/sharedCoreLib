@@ -29,6 +29,14 @@
       "types": "./dist/grant/index.d.ts",
       "import": "./dist/grant/index.js"
     },
+    "./schema": {
+      "types": "./dist/schema/index.d.ts",
+      "import": "./dist/schema/index.js"
+    },
+    "./db": {
+      "types": "./dist/db/index.d.ts",
+      "import": "./dist/db/index.js"
+    },
     "./gating": {
       "types": "./dist/gating/index.d.ts",
       "import": "./dist/gating/index.js"

@@ -35,13 +35,14 @@ console.log("\n  publisher-ci self-test\n  " + "─".repeat(30));
   assert(byId["key-separation"].status === "pass", "passing: key-separation pass");
   assert(byId["kdf-floor"].status === "pass", "passing: kdf-floor pass");
   assert(byId["release-pipeline"].status === "pass", "passing: release-pipeline pass");
+  assert(byId["schema-merge"].status === "pass", "passing: schema-merge pass");
 }
 
 // 2. Failing fixture must trip each check.
 {
   const { summary, byId } = await runFixture("failing");
   assert(summary.failed === true, "failing fixture: overall FAIL");
-  for (const id of ["trust-anchor", "key-separation", "update-metadata", "kdf-floor", "tls-only", "dependency-pinning", "release-pipeline"]) {
+  for (const id of ["trust-anchor", "key-separation", "update-metadata", "kdf-floor", "tls-only", "dependency-pinning", "release-pipeline", "schema-merge"]) {
     assert(byId[id].status === "fail", `failing: ${id} reports fail`);
   }
   // Specific high-signal detections.
@@ -53,11 +54,14 @@ console.log("\n  publisher-ci self-test\n  " + "─".repeat(30));
   const relp = byId["release-pipeline"].findings.map((f) => f.message).join(" | ");
   assert(/PUBLISH_TOKEN/.test(relp), "failing: release-pipeline flags missing PUBLISH_TOKEN");
   assert(/PRIVATE_KEY/.test(relp), "failing: release-pipeline flags signing key in CI");
+  const sch = byId["schema-merge"].findings.map((f) => f.message).join(" | ");
+  assert(/DPDP/.test(sch), "failing: schema-merge flags a DPDP violation");
+  assert(/conflict/.test(sch), "failing: schema-merge flags a registry conflict");
 }
 
 // 3. skipChecks removes a check from the run.
 {
-  const allFailing = ["trust-anchor", "key-separation", "update-metadata", "kdf-floor", "tls-only", "dependency-pinning", "release-pipeline"];
+  const allFailing = ["trust-anchor", "key-separation", "update-metadata", "kdf-floor", "tls-only", "dependency-pinning", "release-pipeline", "schema-merge"];
   const { summary, results } = await runFixture("failing", allFailing);
   assert(summary.failed === false, "skipChecks: skipping all failing checks → PASS");
   assert(results.every((r) => !allFailing.includes(r.id)), "skipChecks: skipped checks absent from results");

@@ -22,6 +22,12 @@ export const DEFAULTS = {
     "@tauri-apps/plugin-http",
   ],
   feed: { requireHttps: true },
+  // Shared-DB schema registry: the app's semantic schema manifest + an optional
+  // snapshot of the already-registered shared schemas to conflict-check against.
+  schema: {
+    manifest: "schema.manifest.json",
+    registry: "shared-schemas.json",
+  },
   // Cross-account release pipeline (publish builds + gh-pages to a publisher account).
   release: {
     publishOwner: "tokans",

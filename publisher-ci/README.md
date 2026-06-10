@@ -35,6 +35,7 @@ npx sharedcorelib-publisher-ci check   # runs the gate; exit 1 on findings ≥ t
 - `publisher.trust.json` — the **baked** trust anchor (fill in real keys)
 - `release.signing.json` — the updater metadata policy
 - `deprecations.json` — the deprecated-API ledger (lib publisher maintains)
+- `schema.manifest.json` — the app's semantic data schema (checked against the shared registry)
 - `.github/workflows/security.yml` — the CI gate
 - `.github/workflows/release.yml` — cross-account build + release + gh-pages publish
 - `.github/pages/index.template.html` — the gh-pages landing page (editable)
@@ -92,6 +93,7 @@ Flags: `--dir=<path>` (default cwd), `--fail-on=critical|high|medium|low`, `--js
 | `tls-only` | high | §7 — **no plaintext `http://`** endpoints (localhost excepted) |
 | `dependency-pinning` | medium | §8 — lockfile present + **critical deps exactly pinned** |
 | `release-pipeline` | high | cross-account publish uses **`PUBLISH_TOKEN`**, targets the publisher account, and carries **no feed/code signing keys in CI** (signing is offline) |
+| `schema-merge` | high | the app's data **schema manifest** validates (incl. DPDP: personal data ≠ Public + has a purpose) and **merges with the shared registry** — conflicts block publish; same-data-twice is flagged |
 
 ## Configuration (`sharedcorelib.security.json`)
 

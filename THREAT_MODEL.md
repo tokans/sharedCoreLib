@@ -172,6 +172,23 @@ to apps (masters bundles, update-availability, the **donation-completion** and
 Everything else stays receive-only. The daily-check phone-home caveats (§7) still apply to
 any backend GET: minimize metadata, no per-user identifier beyond an anonymous token, TLS-pin.
 
+### 6.2 Shared database — cross-app access governance
+
+Installed apps share **one client-side DB** (per-app + common tables), so an app can read
+another app's data. Controls:
+
+- **Confidentiality governs reads** (`Public < Internal < Confidential < Restricted <
+  Secret`, per schema and per field) — an app reads a foreign table only at/below its
+  granted level. **`personalData`** (DPDP) fields must not be `Public` and carry a
+  `purpose`; the `schema-merge` gate enforces this at publish.
+- **Untrusted disk:** the shared DB lives in the user-writable shared dir (§4) — any
+  same-user process can tamper it. Treat reads of integrity-sensitive data accordingly;
+  secrets never go in the shared DB (they stay in the per-app vault, §5).
+- **Schema conflict = blocked publish:** an app cannot silently redefine a shared table's
+  field type/key/confidentiality — the publish-time check rejects it, preventing a
+  malicious or careless app from widening access or corrupting another app's data shape.
+- The **vault stays strictly per-app** — the shared DB relaxation does not touch it.
+
 ---
 
 ## 7. Privacy / metadata

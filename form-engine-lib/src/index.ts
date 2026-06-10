@@ -132,3 +132,4 @@ export type {
 
 export type { FormEngineConfig } from "./libs/config";
 export type { SubmitResult }     from "./hooks/useFormEngine";
+export type { FormEngineState }   from "./store/form-engine-store";

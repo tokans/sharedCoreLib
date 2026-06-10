@@ -1,0 +1,17 @@
+[
+  {
+    "$comment": "Your app's data schema with SEMANTIC metadata. Checked against the shared registry on publish (sharedcorelib/schema). One object per table. Mark personalData fields (DPDP) with a non-Public confidentiality + a purpose. Set shared:true for a common table other apps reuse instead of duplicating.",
+    "namespace": "__APP_ID__",
+    "name": "Example",
+    "schemaType": "Table",
+    "confidentiality": "Internal",
+    "owner": "__APP_ID__",
+    "purpose": "Describe why this table's data exists.",
+    "shared": false,
+    "fields": [
+      { "name": "id", "dataType": "id", "keyField": true, "editability": "Generated" },
+      { "name": "label", "dataType": "string", "required": true, "description": "human label" }
+    ],
+    "relationships": []
+  }
+]

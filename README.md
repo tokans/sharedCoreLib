@@ -41,18 +41,19 @@ themselves (myFinance wires this through a `prebuild` step).
 
 ## Features
 
-Thirteen subsystems, each a subpath export. Every factory takes a **resolved config
+Fifteen subsystems, each a subpath export. Every factory takes a **resolved config
 object** and closes over its own state — there is no module-level singleton, so two
 apps can hold independent instances in one process. See [`CONTRACT.md`](./CONTRACT.md)
 for the per-subsystem app-config shape and what stays in-app.
 
 **Shared vs app-specific.** Most subsystems are **suite-shared** — one client-side
 runtime serves every installed app: env (1), crypto (2), vault (3), report (8),
-ice (9), sync-kernel (10), ui (11), the suite update manager (12), and entitlement
-grants (13). Masters (4) hold **both common and app-specific** tables. Tiers (5)
-provides the shared **standard top tiers** (Patron/Partner) but each app's earned ladder,
-gates (6) and reminders (7) are **app-specific**: the mechanism is shared, the
-data per app. Status: **all 13 subsystems are implemented and unit-tested.** The suite
+ice (9), sync-kernel (10), ui (11), the suite update manager (12), entitlement
+grants (13), the schema registry (14), and the shared DB runtime (15). Masters (4) hold
+**both common and app-specific** tables. Tiers (5) provides the shared **standard top
+tiers** (Patron/Partner) but each app's earned ladder, gates (6) and reminders (7) are
+**app-specific**: the mechanism is shared, the data per app. Status: **all 15 subsystems
+are implemented and unit-tested.** The suite
 updater (12) ships the verification **engine** (delegation-chain verify, anti-rollback,
 freshness, verify-at-load) + types; each app injects the network/fs/lease adapters, the
 hot-reload/stage handlers, and the **native-shell** confirmation UI (see `CONTRACT.md` §7).
@@ -72,6 +73,8 @@ hot-reload/stage handlers, and the **native-shell** confirmation UI (see `CONTRA
 | 11 | **UI foundation** | `sharedcorelib/ui` | `cn` (clsx + tailwind-merge), `ClassValue`, and the suite-standard **publisher attribution** `SupportedByTokans` ("Supported by Tokans.org") for the app's bottom status bar — bakes in no Tailwind classes | the status-bar `className` (+ a Tauri `onActivate` OS opener); heavier UI kit (shadcn primitives, `AppShell`, `FiniteSetInput`) deferred — see `CONTRACT.md` |
 | 12 | **Suite update manager** | `sharedcorelib/suite` | Client-side, **background non-blocking** updater shared by every installed app: `createSuiteUpdater(config)` + `TrustAnchor`/`DelegatedKey`/`PublishedApp`/`SuiteSnapshot`/`SuiteTimestamp` types + pure verify helpers (`verifyDelegated`, `verifyTargetBytes`, `isFresh`, `passesAntiRollback`, `buildUpdatePlan`). A signed-feed check updates common masters, the **published-apps registry**, app versions and the **shared-runtime (self) version** — delegation-chain verify → freshness → anti-rollback → verify-at-load. Webview content **hot-reloads live**, native updates **apply on next launch**. Also the **app marketplace** (`createAppCatalog`) — the mobile "More" surface listing installed + uninstalled apps; click **opens** an installed app, **downloads** an available one, or **enrolls** for a Patron/Partner-gated app (e.g. `myWorkAssistant`). See *Suite update architecture* below | the baked trust anchor; `fetchFile`/`now`/lease adapters; installed-version lookups; the **native-owned** `confirmUpdate`; apply/stage handlers; for the marketplace, registry + local-state adapters + `openExternal`/`launchApp` + `entitlements` |
 | 13 | **Entitlement grants** | `sharedcorelib/grant` | `verifyGrant`, `createGrantReceiver` — the **receive-only** Patron/Partner completion handoff: a signed-then-encrypted grant the app only ever *receives*, via a **dropped file** or an **anonymous backend token** (verify Ed25519 → decrypt AES-GCM → parse). Never uploads | grant signing keys (separate from masters), `parsePayload`, and the receive-only channels (`readDroppedFile` / `fetchByToken`) |
+| 14 | **Schema registry** | `sharedcorelib/schema` | `SchemaDescriptor`/`FieldDescriptor`/`RelationshipDescriptor` — **semantic** data-schema model (purpose, confidentiality, DPDP `personalData`, editability, constraints, relationships), modeled on the hyperclaw schemata. `validateDescriptor` (+ DPDP rule), `compareSchema`/`checkAgainstRegistry`/`mergeIntoRegistry` — the **publish-time conflict/merge** engine for the shared suite DB (identical → no-op, additive → merge, else → reported conflict; flags cross-owner duplicates) | each table's descriptor (fields/relationships/constraints/purpose/confidentiality); the registry snapshot to check against |
+| 15 | **Shared DB runtime** | `sharedcorelib/db` | The ONE shared suite database over an injected `SqlDb`: DDL gen (`createTableSql`/`addColumnSql`/`migrationFor`), the on-disk **schema registry** (`registerSchemas` — append-only migrate, conflict-block at runtime), and **confidentiality-governed** access (`createSharedDb` → `read`/`write`/`list` exposing only tables/fields at/below the caller's level; writes restricted to the owning app) | an injected `SqlDb` (Tauri SQL plugin), the caller's `appId` + granted `Confidentiality` |
 
 ## Masters
 
@@ -241,8 +244,9 @@ The lib build (`tsc` with `include: ["src"]` + `copy-data`) only emits `src/`, s
    runtime is absent on first launch it bootstraps it; if the feed is unreachable it
    falls back to bundled/cached data. No app ever hard-depends on another app.
 2. **Dependency injection, no singletons** — every export takes a resolved config.
-3. **App owns its data & domain** — schema, domain logic, pages, registries,
-   branding and disclaimers stay in each app.
+3. **App owns its domain** — domain logic, pages, branding and disclaimers stay in each
+   app. Its **data schema** is owned but **registered** in the shared schema registry
+   (and may be a shared common table) — see principle 8.
 4. **Per-app secrets stay per-app** — notably the vault's Argon2 salt/params,
    which are passed in as config and **must never change for an existing app**.
 5. **Receive-only, never upload** — a backend *may serve* data to apps (masters
@@ -260,3 +264,12 @@ The lib build (`tsc` with `include: ["src"]` + `copy-data`) only emits `src/`, s
 7. **Trust anchor is add-on-approval, then immutable** — a new app's feed/signing
    anchor is added when the user approves its download; an installed app's anchor can
    never be repointed by feed data.
+8. **One shared DB, no duplication, governed access** — installed apps share a single
+   client-side database with per-app tables PLUS shared **common** tables (a single copy
+   of data many apps use). Every table is described by a **semantic schema**
+   (`sharedcorelib/schema`) with purpose, confidentiality, DPDP `personalData`/`purpose`,
+   and constraints. On publish a schema is **checked + merged** against the registry —
+   identical/additive merges, anything incompatible is a reported conflict that blocks
+   publish, and the same data modeled twice is flagged. **Confidentiality governs
+   cross-app reads**; this relaxes the old per-app-isolated-DB rule but **not** the
+   per-app vault (still strictly isolated).

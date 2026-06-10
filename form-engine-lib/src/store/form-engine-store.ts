@@ -6,7 +6,7 @@ import type {
 } from "../libs/types";
 import { evaluateCondition, evaluateComputed, validateField } from "../libs/condition-evaluator";
 
-interface FormEngineState {
+export interface FormEngineState {
   manifest: FormManifest | null;
   formId: string | null;
   form: FormDef | null;

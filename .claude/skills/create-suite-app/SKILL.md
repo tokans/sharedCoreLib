@@ -102,6 +102,14 @@ For each shared subsystem the app uses, capture the app-supplied config (see CON
 - **ICE** — does the app carry emergency-contact data? If so, define the card fields + disclaimer.
 - **Sync** — does it sync device-to-device? If yes, capture the table SPEC; the LWW kernel + envelope
   crypto are shared, the merge engine + transport stay in-app.
+- **Data schema** (`sharedcorelib/schema`) — declare every table as a **semantic**
+  `SchemaDescriptor` in `schema.manifest.json`: purpose + confidentiality, and per field its
+  dataType, constraints, purpose, confidentiality, and DPDP `personalData` (personal data must
+  be non-Public + have a purpose). The suite runs **one shared DB**; mark `shared: true` for a
+  **common** table other apps reuse instead of duplicating. On publish the `schema-merge` gate
+  checks your schema against the registry — identical/additive merges, conflicts block publish,
+  and same-data-modeled-twice is flagged (convert it to a common table). Confidentiality governs
+  cross-app reads; the vault stays per-app.
 - **Patron/Partner entitlement** (`sharedcorelib/grant`) — wire the **receive-only** handoff that sets
   `isPatron`/`isPartner` (feeds the tier ctx + gating override). Configure the **grant signing keys**
   (separate from masters), `parsePayload`, and the channels: `readDroppedFile` (a `.grant` saved to
@@ -134,7 +142,16 @@ Create the app repo as a sibling (`C:\workspace\<appId>`). Wire the shared lib p
   `snapshotFile`, masters registry+schemas, the tier ladder, gate defs + `computeFlags`, reminder
   generators+adapters, report templates, ICE fields, sync SPEC). Call the core factories with it.
 - `src-tauri`: thin shell — copy `core_bootstrap.rs` (set `APP_ID`), call `ensure_shared_core`, register
-  `shared_core_masters_dir`, and **set the per-app Argon2 salt in `lib.rs` (never change it later)**.
+  `shared_core_masters_dir` **and `shared_core_db_path`** (the latter returns `<shared core>/db/suite.db`),
+  and **set the per-app Argon2 salt in `lib.rs` (never change it later)**.
+- **Shared suite DB** (`sharedcorelib/db`) — wire the ONE shared SQLite (separate from + additive to the
+  app's own DB): get its path from `shared_core_db_path`, `Database.load("sqlite:"+path)`, adapt it to
+  `SqlDb` (a ~6-line wrapper around the SQL plugin's `select`/`execute`), and on launch call
+  `registerSchemas(sql, APP_SCHEMAS)` (append-only, idempotent, fail-silent — a conflict throws and is
+  caught at build time by the `schema-merge` gate). Cross-app reads/writes go through
+  `createSharedDb({ appId, grantedLevel, registry })`. See myFinance `src/db/sharedDb.ts` + `schemas.ts`
+  for the reference wiring. Keep `schema.manifest.json` (scaffolded by `publisher-ci init`) in sync with
+  `APP_SCHEMAS`.
 - App shell: render `SupportedByTokans` from `sharedcorelib/ui` in the **bottom status bar** (every suite
   app shows the same "Supported by Tokans.org" line) — pass the app's `className` and a Tauri `onActivate`
   opener so the link opens in the browser, not the webview. See checklists.md → Stage 6 skeleton.

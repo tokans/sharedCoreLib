@@ -7,6 +7,7 @@ import kdfFloor from "./kdf-floor.mjs";
 import tlsOnly from "./tls-only.mjs";
 import dependencyPinning from "./dependency-pinning.mjs";
 import releasePipeline from "./release-pipeline.mjs";
+import schemaMerge from "./schema-merge.mjs";
 
 export const CHECKS = [
   trustAnchor,
@@ -17,4 +18,5 @@ export const CHECKS = [
   tlsOnly,
   dependencyPinning,
   releasePipeline,
+  schemaMerge,
 ];

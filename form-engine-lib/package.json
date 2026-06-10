@@ -30,6 +30,7 @@
     "vitest": "^2.0.5",
     "jsdom": "^24.1.1",
     "@testing-library/react": "^16.0.0",
+    "@testing-library/dom": "^10.0.0",
     "@testing-library/jest-dom": "^6.4.6"
   },
   "dependencies": {

@@ -24,10 +24,16 @@ export async function loadManifest(
     throw new TypeError("loadManifest: source must be a string or object");
   }
 
-  // URL path
-  if (source.startsWith("http://") || source.startsWith("https://") || source.startsWith("/")) {
-    if (source.startsWith("http")) {
-      // Validate protocol to prevent SSRF
+  // Detect an explicit URL scheme (e.g. http://, https://, ftp://, file://).
+  // Matching here — rather than only on the "http" prefix — ensures unsafe
+  // schemes are rejected by the SSRF guard instead of silently falling through
+  // to be parsed as raw YAML text.
+  const hasScheme = /^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(source);
+
+  // URL path: an explicit scheme, or an absolute path served over HTTP.
+  if (hasScheme || source.startsWith("/")) {
+    if (hasScheme) {
+      // Validate protocol to prevent SSRF — only http/https allowed.
       let parsedUrl: URL;
       try { parsedUrl = new URL(source); }
       catch { throw new Error("Invalid manifest URL"); }

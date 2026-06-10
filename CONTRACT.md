@@ -60,6 +60,8 @@ bundled copy); the lib also lists them as devDeps so it type-checks in isolation
 | `sharedcorelib/masters` | merge: `mergeMasterOptions`, `pickMode`, `DROPDOWN_MAX`, `MasterOption`; verify: `verifyManifestSignature`, `sha256Hex`, `decryptTransport`, `meetsMinVersion`, `verifyAndDecryptManifest`, `genericManifestSchema`; OTA: `createOtaUpdater(config)`; **common masters + namespacing**: `getCommonBaked`, `COMMON_MASTER_IDS`, `isCommonMaster`, `COMMON_SCOPE`, `qualifyMasterKey`, `parseMasterKey` (see §5.7) | release `baseUrl`, signing `pubkeyHex`, `transportKeyB64`, its OWN **app-specific** master registry + zod schemas (reusing the common sets), `getLastRevision`/`applyEntry` adapters, and (for L2) `cacheDir` + `cacheNamespace` |
 | `sharedcorelib/tiers` | `resolveTier`, `tierReached`, `nextEarnedTiers`, `TierDef`; **standard top tiers**: `standardTopTiers`, `hasPatronAccess`, `becomePatronVisible`, `PatronPartnerCtx`, `PATRON_TIER_KEY`/`PARTNER_TIER_KEY` | the app's **earned** ladder (each `{key,label,criteria,reached,grant?}`) + display fields; spread `standardTopTiers()` on the end (Patron/Partner are shared). Patron/Partner status comes from `/grant` |
 | `sharedcorelib/grant` | `verifyGrant`, `createGrantReceiver`, `GrantEnvelope`/`GrantKeys`/`GrantReceiver` | grant signing keys (**separate** from masters keys), `parsePayload`, and the receive-only channels `readDroppedFile` / `fetchByToken` (file-drop / anonymous backend token). Receive-only — never uploads |
+| `sharedcorelib/schema` | `SchemaDescriptor`/`FieldDescriptor`/`RelationshipDescriptor` + `validateDescriptor`, `compareSchema`, `checkAgainstRegistry`, `mergeIntoRegistry`, `qualifiedName`, `Confidentiality`/`CONFIDENTIALITY_ORDER` | each table's semantic descriptor (fields/relationships/constraints/purpose/confidentiality/`personalData`); the registry snapshot to check against (see §8) |
+| `sharedcorelib/db` | DDL: `createTableSql`/`addColumnSql`/`migrationFor`/`sqliteType`/`tableName`; registry: `ensureRegistry`/`loadRegistry`/`registerSchemas` (append-only migrate + conflict-block); governance: `createSharedDb({appId,grantedLevel,registry})` → `read`/`write`/`list`, `visibleColumns`/`schemaVisibleAt`/`canAppWrite`; `SqlDb` | an injected `SqlDb` (the Tauri SQL plugin), the calling `appId` + granted `Confidentiality`. Runs the ONE shared suite DB (see §8) |
 | `sharedcorelib/gating` | `FeatureGate`, `isFeatureUnlocked`, `createGatingStore(config)`, `GatingState` | flag shape, gate defs + copy, `computeFlags()` (queries app DB), `unlockedAll`, optional `override` (wire to `hasPatronAccess` → a Patron/Partner unlocks all). The `FeatureGuard` React component stays in the app. |
 | `sharedcorelib/reminders` | pure scheduling (`daysBetween`, `addDaysISO`, `addYearsISO`, `bucketFor`, `shouldNotify`, `nextAnnual`, `fyReviewDueDate`, `byDueDate`, `dueLabel`, `isSnoozed`, `DUE_SOON_DAYS`, `ReminderLike`); notify (`ensureNotificationPermission`, `sendNotification`); `runReminderSweep(adapters)` | the derived-reminder generators + DB adapters (`syncDerived`, `listOpen`, `markFired`) + `today` |
 | `sharedcorelib/report` | `printHtmlAsPdf`, `escapeHtml` | the report HTML templates |
@@ -169,8 +171,10 @@ subdir** (`core/v2/`) so majors coexist and each app picks its own.
 
 ### 5.6 Never shared (security & independence)
 
-Vaults (per-app Argon2 salt), app SQLite DBs, and app settings stay **strictly
-per-app and isolated**. Only the redistributable L2 assets above are shared.
+**Vaults** (per-app Argon2 salt) and app **secrets/settings** stay **strictly per-app and
+isolated**. The application **database is now shared** across installed apps (one suite DB
+with per-app + common tables) — governed by the schema registry's confidentiality, see
+**§8**. (This revises the original "app SQLite DBs stay per-app"; the vault does NOT.)
 
 ---
 
@@ -350,3 +354,67 @@ App config supplies: `currentAppId`, `listPublishedApps` (read the shared regist
 `launchApp` (native), and an optional `platform()`. Install/launch are **OS-mediated** —
 the catalog surfaces links + state; it never sideloads. Feed-supplied
 `downloadLinks`/`marketingUrl` should be origin-allow-listed before opening (THREAT_MODEL §7).
+
+---
+
+## 8. Shared suite database + schema registry
+
+The suite runs **one shared client-side database** (in the shared suite dir, alongside the
+masters cache and registry) instead of N isolated app DBs. Goals: **no data duplication**
+(the same data lives once), apps can **read each other's data** under governance, and a
+**published app's schema is checked + merged** so two apps can't silently diverge on the
+same table.
+
+### 8.1 Tables: per-app + common
+
+- **Per-app tables** — owned by one app, qualified by its namespace; other apps read them
+  only if confidentiality allows (§8.4). The owning app writes.
+- **Common tables** (`shared: true`, `owner: "common"` or a designated owner) — a SINGLE
+  copy of data many apps use (the dedup win). Defined once; every entitled app reads.
+
+### 8.2 Semantic schema (`sharedcorelib/schema`)
+
+Every table is a {@link SchemaDescriptor}: `namespace`, `name`, `schemaType`,
+`confidentiality`, `purpose`, `owner`, `shared`, plus per-**field** (`dataType`,
+`description`, `purpose`, `confidentiality`, **`personalData`** (DPDP), `editability`,
+`keyField`, `index`, `constraints`) and per-**relationship** (`relationshipType`,
+`relatedSchema`, `embedded`, `reverseName`, …) metadata. Modeled on the hyperclaw
+`schemata` meta-schema. The registry stores this for **all** data — it is the catalogue +
+governance source of truth.
+
+### 8.3 Publish-time check + merge
+
+On publish, the app's schema manifest is checked against the registered schemas
+(`checkAgainstRegistry`):
+
+- **new** → registered; **identical** → no-op; **additive** (new fields/relationships) →
+  auto-`mergeIntoRegistry`; **incompatible** (field-type change, key change,
+  confidentiality downgrade, personal-data flip, relationship change, schema-kind change)
+  → a **reported conflict that blocks the publish** until resolved.
+- **Duplicate candidates** — a proposed table whose Name + field shape matches an existing
+  one under a different owner is flagged so the publisher converts it to a **common** table
+  instead of duplicating the data.
+
+This is enforced at the consumer's build stage by `publisher-ci`'s **`schema-merge`** check
+(validates the manifest incl. DPDP, conflict-checks against a committed registry snapshot;
+the authoritative engine is `sharedcorelib/schema`).
+
+### 8.4 Access governance
+
+`confidentiality` (`Public < Internal < Confidential < Restricted < Secret`) on the schema
+and per field governs **cross-app reads** of the shared DB; a field's level overrides the
+schema's. **`personalData`** marks DPDP personal data — it must not be `Public` and needs a
+`purpose`. The shared DB sits on the **user-writable shared dir** (untrusted disk, see
+THREAT_MODEL §4) so integrity-sensitive reads must not assume tamper-freedom.
+
+### 8.5 What stays per-app
+
+The **vault** (per-app Argon2 salt) and app **secrets/settings** remain strictly isolated
+(§5.6). Only the application data DB is shared.
+
+> Status: implemented + tested — the **schema engine** (`/schema`: descriptor + validate +
+> conflict/merge + duplicate detection), the **publish-time gate** (`publisher-ci`
+> `schema-merge`), AND the **runtime DB layer** (`/db`: DDL generation, on-disk registry with
+> append-only migrate + conflict-block, confidentiality-governed `read`/`write`/`list`). What
+> remains is app-side wiring: inject the Tauri `SqlDb`, call `registerSchemas` at
+> install/publish, and resolve each app's granted confidentiality level.

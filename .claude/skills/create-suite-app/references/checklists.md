@@ -77,6 +77,35 @@ import { openUrl } from "@tauri-apps/plugin-opener";   // route the link through
 </footer>
 ```
 
+## Stage 6 — shared suite DB wiring skeleton
+
+```ts
+// src/db/sharedDb.ts — the ONE shared suite DB (separate from the app's own DB)
+import Database from "@tauri-apps/plugin-sql";
+import { invoke } from "@tauri-apps/api/core";
+import { registerSchemas, loadRegistry, createSharedDb, type SqlDb } from "sharedcorelib/db";
+import type { Confidentiality } from "sharedcorelib/schema";
+import { APP_SCHEMAS } from "./schemas";        // your SchemaDescriptor[]
+
+let p: Promise<Database> | null = null;
+const open = () => (p ??= invoke<string>("shared_core_db_path").then((path) => Database.load(`sqlite:${path}`)));
+const adapt = (db: Database): SqlDb => ({
+  select: (sql, params = []) => db.select(sql, params),
+  execute: async (sql, params = []) => { const r = await db.execute(sql, params); return { rowsAffected: r.rowsAffected, lastInsertId: r.lastInsertId ?? undefined }; },
+});
+
+export async function initSharedDb() {            // call once on launch (inside Tauri)
+  try { await registerSchemas(adapt(await open()), APP_SCHEMAS); } catch (e) { console.warn("shared-db skipped:", e); }
+}
+export async function sharedDbFor(level: Confidentiality) {
+  const sql = adapt(await open());
+  return createSharedDb({ db: sql, appId: "<appId>", grantedLevel: level, registry: await loadRegistry(sql) });
+}
+```
+
+Rust (`core_bootstrap.rs`): add `fs::create_dir_all(dir.join("db"))?;` and a `shared_core_db_path`
+command returning `<shared core>/db/suite.db` (mirror `shared_core_masters_dir`); register it in `lib.rs`.
+
 ## Stage 9 — demo config skeleton (Tauri driver)
 
 ```ts
