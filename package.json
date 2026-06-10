@@ -53,6 +53,10 @@
       "types": "./dist/pii/index.d.ts",
       "import": "./dist/pii/index.js"
     },
+    "./multiuser": {
+      "types": "./dist/multiuser/index.d.ts",
+      "import": "./dist/multiuser/index.js"
+    },
     "./db": {
       "types": "./dist/db/index.d.ts",
       "import": "./dist/db/index.js"
