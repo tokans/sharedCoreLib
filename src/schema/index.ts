@@ -6,7 +6,7 @@
  * is never replicated. To make that safe, every table is described by a SEMANTIC
  * {@link SchemaDescriptor}: the schema's purpose + confidentiality, and for each
  * field/relationship its dataType, constraints, purpose, confidentiality, and DPDP
- * personal-data marker. The descriptor model is distilled from the hyperclaw
+ * personal-data marker. The descriptor model is distilled from the suite
  * `schemata` meta-schema (Schema/Field/Relationship + confidentiality, editability,
  * personalData/purpose, relationshipType, indexType, constraints).
  *
@@ -18,7 +18,7 @@
  */
 import { z } from "zod";
 
-// ── Vocabulary (from the hyperclaw schemata) ─────────────────────────────────
+// ── Vocabulary (from the suite `schemata` meta-schema) ───────────────────────
 
 export type Confidentiality = "Public" | "Internal" | "Confidential" | "Restricted" | "Secret";
 export const CONFIDENTIALITY_ORDER: Confidentiality[] = ["Public", "Internal", "Confidential", "Restricted", "Secret"];

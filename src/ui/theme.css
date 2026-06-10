@@ -1,0 +1,77 @@
+/*
+ * Suite default theme — the shared *default* token VALUES (CONTRACT.md §4.2).
+ *
+ * Pairs with `sharedcorelib/tailwind-preset` (which maps `bg-card`, `text-primary`, … →
+ * `hsl(var(--token))`). This file supplies the canonical default palette every app inherits.
+ *
+ * Per-app override: an app imports this at the TOP of its own `index.css`, then re-declares
+ * only the custom properties it wants different in a later `:root` / `.dark` block — the CSS
+ * cascade lets the app's later declaration win, so branding stays per-app with no fork:
+ *
+ *   // app src/index.css
+ *   @import "sharedcorelib/ui/theme.css";
+ *   @tailwind base;
+ *   @tailwind components;
+ *   @tailwind utilities;
+ *   @layer base {
+ *     :root { --primary: 173 80% 36%; --accent: 173 70% 94%; --ring: 173 80% 36%; --radius: 0.6rem; }
+ *     .dark { --primary: 173 70% 45%; --card: 222.2 47% 9%; --ring: 173 70% 45%; }
+ *   }
+ *
+ * Tokens are HSL triples (consumed via `hsl(var(--token))`), the shadcn convention. The
+ * shared token vocabulary is the suite contract — see CONTRACT.md §4.2. Brand tokens
+ * (`--primary`, `--accent`, `--ring`, `--radius`) default to a neutral slate so an app looks
+ * coherent before it overrides; every app is expected to override these for its identity.
+ */
+@layer base {
+  :root {
+    --background: 0 0% 100%;
+    --foreground: 222.2 84% 4.9%;
+    --card: 0 0% 100%;
+    --card-foreground: 222.2 84% 4.9%;
+    --primary: 222.2 47.4% 11.2%;
+    --primary-foreground: 210 40% 98%;
+    --secondary: 210 40% 96.1%;
+    --secondary-foreground: 222.2 47.4% 11.2%;
+    --muted: 210 40% 96.1%;
+    --muted-foreground: 215.4 16.3% 46.9%;
+    --accent: 210 40% 96.1%;
+    --accent-foreground: 222.2 47.4% 11.2%;
+    --destructive: 0 84.2% 60.2%;
+    --destructive-foreground: 210 40% 98%;
+    --border: 214.3 31.8% 91.4%;
+    --input: 214.3 31.8% 91.4%;
+    --ring: 222.2 84% 4.9%;
+    --radius: 0.5rem;
+  }
+
+  .dark {
+    --background: 222.2 84% 4.9%;
+    --foreground: 210 40% 98%;
+    --card: 222.2 84% 4.9%;
+    --card-foreground: 210 40% 98%;
+    --primary: 210 40% 98%;
+    --primary-foreground: 222.2 47.4% 11.2%;
+    --secondary: 217.2 32.6% 17.5%;
+    --secondary-foreground: 210 40% 98%;
+    --muted: 217.2 32.6% 17.5%;
+    --muted-foreground: 215 20.2% 65.1%;
+    --accent: 217.2 32.6% 17.5%;
+    --accent-foreground: 210 40% 98%;
+    --destructive: 0 62.8% 30.6%;
+    --destructive-foreground: 210 40% 98%;
+    --border: 217.2 32.6% 17.5%;
+    --input: 217.2 32.6% 17.5%;
+    --ring: 212.7 26.8% 83.9%;
+  }
+
+  /* Suite-default base reset (apps may drop their own duplicates once they import this). */
+  * {
+    border-color: hsl(var(--border));
+  }
+  body {
+    background-color: hsl(var(--background));
+    color: hsl(var(--foreground));
+    -webkit-font-smoothing: antialiased;
+  }
+}

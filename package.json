@@ -88,7 +88,12 @@
     "./suite": {
       "types": "./dist/suite/index.d.ts",
       "import": "./dist/suite/index.js"
-    }
+    },
+    "./tailwind-preset": {
+      "require": "./tailwind/preset.cjs",
+      "default": "./tailwind/preset.cjs"
+    },
+    "./ui/theme.css": "./src/ui/theme.css"
   },
   "scripts": {
     "build": "tsc -p tsconfig.json && node scripts/copy-data.mjs",
@@ -98,6 +103,7 @@
   },
   "peerDependencies": {
     "@noble/ed25519": "^3.1.0",
+    "@radix-ui/react-dialog": "^1.1.2",
     "@tauri-apps/api": "^2.1.1",
     "@tauri-apps/plugin-fs": "^2.0.2",
     "@tauri-apps/plugin-http": "^2.0.0",
@@ -105,8 +111,12 @@
     "@tauri-apps/plugin-os": "^2.0.0",
     "@tauri-apps/plugin-stronghold": "^2.0.0",
     "clsx": "^2.1.1",
+    "lucide-react": "^0.460.0",
     "react": "^18.3.1",
+    "react-router-dom": "^6.28.0",
     "tailwind-merge": "^2.5.4",
+    "tailwindcss": "^3.4.14",
+    "tailwindcss-animate": "^1.0.7",
     "zod": "^3.23.8",
     "zustand": "^5.0.1"
   },
@@ -132,6 +142,7 @@
   },
   "devDependencies": {
     "@noble/ed25519": "^3.1.0",
+    "@radix-ui/react-dialog": "^1.1.2",
     "@tauri-apps/api": "^2.1.1",
     "@tauri-apps/plugin-fs": "^2.0.2",
     "@tauri-apps/plugin-http": "^2.0.0",
@@ -142,9 +153,13 @@
     "@types/react": "^18.3.12",
     "@types/react-dom": "^18.3.7",
     "clsx": "^2.1.1",
+    "lucide-react": "^0.460.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
+    "react-router-dom": "^6.28.0",
     "tailwind-merge": "^2.5.4",
+    "tailwindcss": "^3.4.14",
+    "tailwindcss-animate": "^1.0.7",
     "typescript": "^5.6.3",
     "vitest": "^4.1.7",
     "zod": "^3.23.8",

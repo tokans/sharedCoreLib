@@ -45,8 +45,9 @@ config — no module-level singletons**.
 
 The package is ESM-only (`"type": "module"`); each subpath exposes `types` +
 `import` conditions. Tauri plugins, `react`, `zod`, `zustand`, `@noble/*`,
-`clsx`, `tailwind-merge` are **peerDependencies** (the app provides the single
-bundled copy); the lib also lists them as devDeps so it type-checks in isolation.
+`clsx`, `tailwind-merge` (and, once the primitive UI kit lands per §4.2,
+`tailwindcss` + `tailwindcss-animate`) are **peerDependencies** (the app provides
+the single bundled copy); the lib also lists them as devDeps so it type-checks in isolation.
 
 ---
 
@@ -67,7 +68,7 @@ bundled copy); the lib also lists them as devDeps so it type-checks in isolation
 | `sharedcorelib/report` | `printHtmlAsPdf`, `escapeHtml` | the report HTML templates |
 | `sharedcorelib/ice` | `mentionsContact`, `telHref`, `mailtoHref`, `hasActionableContact`, `CONTACT_PHRASES` | ICE-card fields + disclaimer copy |
 | `sharedcorelib/sync` | `isNewer` (LWW rule), `SyncDb`; **per-app-scoped merge engine** (promoted from apps): `createMergeEngine`/`syncableTables`/`buildBundle`/`applyBundle`/`SyncTransport` — syncs only owned + `common` tables (receive-side scoped). Apps delete their local `merge.ts` | the schema `registry` + `appId` + `localDeviceId`; the Rust LAN transport as the injected `SyncTransport`. Envelope crypto = `sharedcorelib/crypto`. |
-| `sharedcorelib/ui` | `cn`, `ClassValue`; **publisher attribution**: `SupportedByTokans`, `tokansAttribution`, `SUPPORTED_BY_LABEL`, `TOKANS_URL`, `TOKANS_LOGO_DATA_URI`; **responsive harness** (the app shell apps migrate onto — see §4.1): `AppHarness` (slots `nav`/`main`/`side`/`footer`, each a node or orientation-aware render-fn; horizontal↔vertical via `pickOrientation`; `verticalNavPosition`; tier-gated chrome via `chromeActions`), `useViewportWidth` (SSR-safe), `themeStyle`/`DEFAULT_THEME`/`SuiteThemeToken` (theme-token vocabulary) — SSR-safe, purge-safe | for the harness: `width` (from `useViewportWidth`), slot content, `HarnessChrome` actions (Settings/Patron/Marketplace/external), theme tokens; **primitive** UI kit (`FiniteSetInput`, shadcn primitives) still deferred — see §4 |
+| `sharedcorelib/ui` | **Purge-safe:** `cn`, `ClassValue`; **publisher attribution** (`SupportedByTokans`, `tokansAttribution`, `SUPPORTED_BY_LABEL`, `TOKANS_URL`, `TOKANS_LOGO_DATA_URI`); **`AppHarness`** unstyled responsive primitive (slots + `pickOrientation`/`useViewportWidth`/`themeStyle`/`DEFAULT_THEME`/`SuiteThemeToken`/`chromeActions`). **Styled kit (needs §4.2 preset + `theme.css` + content glob):** **`SuiteShell`** (`SuiteNavItem`/`SuiteAction`/`SuiteAccount` — sidebar + mobile top bar + 3-button bar + adaptive central sheet + More drawer + `profile` slot + tier-gated `account`) and **`Sheet`**/`SheetContent`/`SheetClose` drawer. Also: **`sharedcorelib/tailwind-preset`** (Tailwind preset) + **`sharedcorelib/ui/theme.css`** (default token values). | for `SuiteShell`: `brand`, `nav` (precomputed `state`), `centralActions`, `actions`, `profile` slot, optional `account` (tier ≥ 2), `onExternal`. Must render inside the app's `react-router-dom` Router. **primitive** kit (`FiniteSetInput`, shadcn primitives) still deferred — see §4 |
 | `sharedcorelib/entities` | `createEntitiesStore`, `ENTITY_SCHEMAS`, `personKeyFor`; the `person`/`event`/`document`/`asset` spine (all `owner:"common"`) — identity-only `person` + per-app facets, dormant `PersonRelationship` edges, **explicit-reference identity** (`pickOrCreatePerson`, no auto-merge), `suggestDuplicates`, `assetsForOwner`. **Contract:** `contracts/entities.md` | an injected `SqlDb` + `appId`. Read/write the spine via this — never re-model it (invariant 6) |
 | `sharedcorelib/recovery` | `generateRecoveryKey`, `wrapMasterKey`/`unwrapMasterKey`, `createRecovery` (local + zero-knowledge escrow + re-key), Shamir `splitSecret`/`combineShares`/`splitRecoveryKey`; `RecoveryBlobStore`/`EscrowClient`/`WrappedKey` | a local `RecoveryBlobStore`; optional registered-tier `EscrowClient`. RK is user-held, never vendor-held |
 | `sharedcorelib/breakglass` | `BreakGlassContributor` (frozen contributor interface), `buildSnapshot` (tier redaction), `generateRecipientPassphrase`, `wrapSlice`/`openSlice` (zero-knowledge slice + license-free reader), `isReleaseEligible`, `BREAKGLASS_SCHEMAS`/`createBreakGlassLedger`, `BreakGlassEscrow`. **Contract:** `contracts/breakglass.md` | each app's `BreakGlassContributor` (does its own redaction); an injected `SqlDb`; a `BreakGlassEscrow` (release gated by `account` 2FA) |
@@ -116,17 +117,52 @@ are never shared between apps.
 - **App shell / responsive layout** — ✅ **promoted into core as `AppHarness`** (`/ui`, Phase 6).
   The suite's responsive shell (slots + chrome + theming + horizontal↔vertical transform) that apps
   migrate their bespoke `AppShell` onto. See **§4.1**.
-- **UI primitive kit (shadcn primitives, `FiniteSetInput`)** — still in-app. `cn`, the publisher
-  attribution, the `AppHarness` shell, and `FeatureGuard` are extracted (none bake Tailwind
-  utilities, so no `content`-config change is needed to adopt them). Moving the **primitives**
-  (Button/Input/Dialog/…) and `FiniteSetInput` is the remaining UI step: the consuming app must add
-  this package's source/`dist` to its **Tailwind `content` globs** (else the primitives' utility
-  classes are purged), and `FiniteSetInput` needs the app's master-data hook injected. Tracked as
-  the next UI step.
+- **Styled shell + drawer** — ✅ **promoted into core** (`/ui`): the opinionated **`SuiteShell`**
+  (sidebar + mobile top bar + three-button bottom bar + adaptive central sheet + More drawer +
+  injected `profile` slot + tier-gated `account` button) and the **`Sheet`** drawer primitive it
+  builds on. Unlike `AppHarness` (the unstyled layout primitive) these **bake Tailwind utilities**,
+  so they are the first consumers of the §4.2 theming + content-glob policy. See **§4.1**.
+- **UI primitive kit (shadcn primitives, `FiniteSetInput`)** — still in-app. Extracted so far:
+  `cn`, the publisher attribution, `AppHarness`, `FeatureGuard`, and now `SuiteShell` + `Sheet`.
+  Moving the remaining **primitives** (Button/Input/Dialog/…) and `FiniteSetInput` is the next UI
+  step, governed by the **§4.2 theming + content-glob policy**: a consuming app uses the shared
+  Tailwind **preset** + base **theme.css** and adds `../sharedCoreLib/src/ui/**` to its Tailwind
+  `content` globs (else the utility classes are purged); `FiniteSetInput` additionally needs the
+  app's master-data hook injected.
 
-### 4.1 Migrating an app's `AppShell` → `AppHarness`
+### 4.1 Migrating an app's `AppShell` → the shared shell
 
-`AppHarness` (`sharedcorelib/ui`) is the suite's responsive shell. To migrate:
+Two layers are available; **prefer `SuiteShell`** unless you need a fully bespoke layout.
+
+#### 4.1.a `SuiteShell` — the opinionated, styled default (recommended)
+
+`SuiteShell` (`sharedcorelib/ui`) is the suite's shared, **styled** shell — one consistent look for
+every app across desktop and mobile. It owns the chrome; the app supplies **data + slots**:
+
+- **`brand`** — icon + name lockup (sidebar header + mobile top bar).
+- **`nav: SuiteNavItem[]`** — the full nav. Shown in full on the desktop sidebar; the non-home items
+  fill the mobile **More** drawer. Mark one item `home` (the single mobile bottom-bar tab; its label
+  is app-defined, e.g. "Today"). Each item carries a **precomputed `state`** (`"open" | "nudge"`) so
+  the shell never imports app gating — compute it from your gating store and omit hidden items.
+- **`centralActions: SuiteAction[]`** — the mobile center button is **adaptive**: 0 actions → no
+  center button; 1 → a plain button that runs it; 2+ → a raised FAB that opens a bottom sheet.
+- **`actions: SuiteAction[]`** — standard secondary actions (settings / donate / marketplace …),
+  rendered in both the More drawer and the desktop sidebar footer. `moreExtra` / `moreHeader` /
+  `sidebarTop` inject app-specific content (e.g. a tier badge).
+- **`profile`** — the injected top-right slot (app-owned; e.g. myHealth's family-profile button +
+  drawer). Keeps the shell free of login/multi-user semantics — **free apps stay login-less**.
+- **`account?: { tier, … }`** — the OPTIONAL built-in account button, rendered **only at tier ≥ 2**.
+- **`onExternal`** — Tauri OS opener for the auto-rendered "Supported by Tokans" attribution.
+
+Routing uses `react-router-dom` (the suite standard — `NavLink`/`useLocation`), so `SuiteShell` must
+render inside the app's `Router`. It is **styled with Tailwind utilities**, so the app must adopt the
+**§4.2** theming policy: the shared preset, `theme.css`, and the `../sharedCoreLib/src/ui/**` content
+glob. The reference adopter is **myHealth** (`src/components/layout/AppShell.tsx`).
+
+#### 4.1.b `AppHarness` — the unstyled layout primitive
+
+`AppHarness` (`sharedcorelib/ui`) is the lower-level, **purge-safe** responsive shell (no baked
+utilities) for apps that need a bespoke look. To migrate:
 
 1. **Feed width** — `const width = useViewportWidth();` (SSR-safe; returns 1024 before mount).
 2. **Inject slots** — `nav` / `main` / `side` / `footer`. Each slot may be a node **or** a render-fn
@@ -146,6 +182,59 @@ are never shared between apps.
 
 The contract is tight on purpose: **four fixed slots + one config object**. App-specific nav items,
 bottom-sheets, dialogs, and the locked-feature UI live in the slot/render-prop content, not the harness.
+
+### 4.2 Theming model + Tailwind `content`-glob policy (decided 2026-06-10)
+
+This is the policy that unblocks extracting the **primitive UI kit** (shadcn primitives + `FiniteSetInput`)
+into `sharedcorelib/ui`. Goal: **mostly-common theming kept in the lib as the default, each app able to
+override with styles kept in its own repo.** Three cooperating parts:
+
+**Token vocabulary (the shared contract).** Theming is CSS custom properties in the shadcn convention —
+HSL triples consumed via `hsl(var(--token))`: `--background`, `--foreground`, `--card(-foreground)`,
+`--primary(-foreground)`, `--secondary`, `--muted`, `--accent`, `--destructive`, `--border`, `--input`,
+`--ring`, `--radius`. These names are **canonical for the whole suite**. `AppHarness`'s older
+`SuiteThemeToken`/`DEFAULT_THEME` set (`--color-card`, `--color-bg`, …) is **aligned to these names** when
+the primitives land — the harness and the primitives must read the same variables.
+
+**Layer 1 — shared defaults, owned by sharedCoreLib (the "default theme").**
+- A **Tailwind preset** the lib exports (`sharedcorelib` package, built to e.g. `dist/tailwind/preset.cjs`)
+  defining `darkMode: ["class"]`, the `theme.extend.colors` token→`hsl(var(--token))` mapping,
+  `borderRadius` derived from `--radius`, and `plugins: [require("tailwindcss-animate")]`. This is what
+  makes `bg-card` / `rounded-md` mean the same thing in every app.
+- A **shared base stylesheet** (`sharedcorelib/ui/theme.css`) with `@layer base { :root { …suite default
+  palette… } .dark { … } }` — the canonical default token values.
+
+**Layer 2 — per-app override, owned by the app repo (the "branding").**
+- App `tailwind.config`: `presets: [require("sharedcorelib/.../preset.cjs")]`, plus any **app-only**
+  `theme.extend` for brand tokens the suite doesn't define.
+- App `index.css`: pull in the shared `theme.css`, then **re-declare only the `:root`/`.dark` variables it
+  wants different**. CSS cascade → the app's later declaration wins, so all branding lives in one place in
+  the app and nothing is forked from the lib.
+
+**Content-glob policy (orthogonal — controls *which* utilities compile, not what they resolve to).**
+Tailwind v3 is a purge compiler: it only emits CSS for class strings it finds in files listed in `content`.
+Because the shared primitives' class strings live in the lib, **every consuming app MUST add the lib's UI
+source to its `content` globs**:
+
+```js
+// app tailwind.config.cjs
+content: ["./index.html", "./src/**/*.{ts,tsx}", "../sharedCoreLib/src/ui/**/*.{ts,tsx}"]
+```
+
+Scan the lib **`src`, not `dist`** — `npm run dev` skips the core `prebuild`, so `dist` can be stale or
+absent in browser-preview, whereas `src` is always present and the class strings are identical after `tsc`.
+Forgetting this glob renders shared primitives **unstyled at runtime** (it still type-checks), so it is a
+required setup step for any app adopting the primitive kit, and `publisher-ci` / the app template should
+assert its presence.
+
+**Dependencies.** `tailwindcss` + `tailwindcss-animate` are **peerDependencies** of the lib (the app
+provides the single install; the lib only references the plugin from its preset) — consistent with the
+heavy-deps-are-peerDeps invariant. `clsx`/`tailwind-merge` are already peers (for `cn`).
+
+**Adoption order.** (1) lib publishes the preset + `theme.css` + token alignment; (2) an app adds the
+content glob, switches its `tailwind.config` to the preset, and imports `theme.css`, keeping only its
+override block; (3) primitives move into `sharedcorelib/ui` and the app deletes its local copies. Until an
+app completes step 2 it keeps its current in-app config unchanged — the policy is additive, not a flag day.
 
 ---
 
@@ -412,7 +501,7 @@ Every table is a {@link SchemaDescriptor}: `namespace`, `name`, `schemaType`,
 `confidentiality`, `purpose`, `owner`, `shared`, plus per-**field** (`dataType`,
 `description`, `purpose`, `confidentiality`, **`personalData`** (DPDP), `editability`,
 `keyField`, `index`, `constraints`) and per-**relationship** (`relationshipType`,
-`relatedSchema`, `embedded`, `reverseName`, …) metadata. Modeled on the hyperclaw
+`relatedSchema`, `embedded`, `reverseName`, …) metadata. Modeled on the suite
 `schemata` meta-schema. The registry stores this for **all** data — it is the catalogue +
 governance source of truth.
 
