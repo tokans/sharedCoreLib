@@ -12,6 +12,10 @@
  *     the registered schemas in `__schema_registry__` and apply the table migrations on
  *     publish/install. A conflicting schema BLOCKS registration (the publish gate already
  *     catches it at build time; this is the runtime backstop).
+ *   - **Aux SQL migrations** — `registerAuxMigrations(db, appId, steps)` applies app-scoped,
+ *     versioned raw-SQL steps (triggers/CHECKs — what descriptors can't express) append-only
+ *     after `registerSchemas`, with an ownership guard: a step may only touch tables the
+ *     registry says `appId` owns.
  *   - **Confidentiality-governed access** — `createSharedDb({ appId, grantedLevel })`
  *     exposes `read`/`write`/`list` that only expose tables + fields at/below the caller's
  *     granted confidentiality, and only let an app WRITE tables it owns.
@@ -154,6 +158,187 @@ export async function registerSchemas(db: SqlDb, descriptors: SchemaDescriptor[]
     applied,
     duplicateCandidates: check.duplicateCandidates.map((d) => ({ schema: d.schema, detail: d.detail })),
   };
+}
+
+// ── Aux SQL migrations (app-scoped, versioned raw SQL) ──────────────────────
+
+export const AUX_MIGRATIONS_TABLE = "__aux_migrations__";
+
+/** One aux migration step: a version + the raw SQL statements it applies. */
+export interface AuxMigrationStep {
+  /** Positive integer; steps apply in ascending order, append-only per app. */
+  version: number;
+  /** Raw SQL statements (triggers, CHECK-bearing indexes, …) executed in order. */
+  sql: string[];
+}
+
+export interface AuxMigrationResult {
+  /** Versions applied by this run, ascending. */
+  applied: number[];
+  /** Versions skipped because they were already recorded (idempotent re-run). */
+  skipped: number[];
+}
+
+// SQL identifier: "quoted", `quoted`, [quoted], or a bare word.
+const SQL_ID = `(?:"[^"]+"|\`[^\`]+\`|\\[[^\\]]+\\]|[A-Za-z_][A-Za-z0-9_$]*)`;
+// A table reference: optional schema prefix (main./temp.), capture the table identifier.
+const SQL_TBL = `(?:${SQL_ID}\\.)?(${SQL_ID})`;
+
+/** Strip comments + single-quoted string literals so they can't hide table names. */
+function stripSqlNoise(sql: string): string {
+  return sql
+    .replace(/--[^\n]*/g, " ")
+    .replace(/\/\*[\s\S]*?\*\//g, " ")
+    .replace(/'(?:[^']|'')*'/g, "''");
+}
+
+function unquoteSqlIdent(raw: string): string {
+  const t = raw.trim();
+  if ((t.startsWith('"') && t.endsWith('"')) || (t.startsWith("`") && t.endsWith("`"))) return t.slice(1, -1);
+  if (t.startsWith("[") && t.endsWith("]")) return t.slice(1, -1);
+  return t;
+}
+
+// Patterns that put a TABLE name in a known position. DROP TRIGGER/INDEX names and
+// CTE aliases are deliberately NOT extracted (they are not tables).
+const TABLE_POSITION_PATTERNS: RegExp[] = [
+  // trigger header: BEFORE|AFTER|INSTEAD OF INSERT|DELETE|UPDATE [OF cols] ON <t>
+  new RegExp(`\\b(?:INSERT|DELETE|UPDATE(?:\\s+OF\\s+[A-Za-z0-9_$",\`\\[\\]\\s]+?)?)\\s+ON\\s+${SQL_TBL}`, "gi"),
+  // CREATE [UNIQUE] INDEX [IF NOT EXISTS] <name> ON <t>
+  new RegExp(`\\bINDEX\\s+(?:IF\\s+NOT\\s+EXISTS\\s+)?${SQL_ID}\\s+ON\\s+${SQL_TBL}`, "gi"),
+  new RegExp(`\\bINSERT\\s+(?:OR\\s+(?:REPLACE|IGNORE|ABORT|FAIL|ROLLBACK)\\s+)?INTO\\s+${SQL_TBL}`, "gi"),
+  new RegExp(`\\bREPLACE\\s+INTO\\s+${SQL_TBL}`, "gi"),
+  new RegExp(`\\bUPDATE\\s+(?:OR\\s+(?:REPLACE|IGNORE|ABORT|FAIL|ROLLBACK)\\s+)?${SQL_TBL}\\s+SET\\b`, "gi"),
+  new RegExp(`\\bDELETE\\s+FROM\\s+${SQL_TBL}`, "gi"),
+  new RegExp(`\\bFROM\\s+${SQL_TBL}`, "gi"),
+  new RegExp(`\\bJOIN\\s+${SQL_TBL}`, "gi"),
+  new RegExp(`\\bALTER\\s+TABLE\\s+${SQL_TBL}`, "gi"),
+  new RegExp(`\\bDROP\\s+TABLE\\s+(?:IF\\s+EXISTS\\s+)?${SQL_TBL}`, "gi"),
+  new RegExp(`\\bCREATE\\s+(?:TEMP(?:ORARY)?\\s+)?TABLE\\s+(?:IF\\s+NOT\\s+EXISTS\\s+)?${SQL_TBL}`, "gi"),
+  new RegExp(`\\bCREATE\\s+(?:TEMP(?:ORARY)?\\s+)?VIEW\\s+(?:IF\\s+NOT\\s+EXISTS\\s+)?${SQL_TBL}`, "gi"),
+  new RegExp(`\\bREFERENCES\\s+${SQL_TBL}`, "gi"),
+];
+
+/**
+ * Extract the table identifiers a raw SQL statement references (trigger ON-targets,
+ * INSERT/UPDATE/DELETE/SELECT/JOIN targets incl. trigger bodies, index ON-targets,
+ * ALTER/CREATE/DROP TABLE, REFERENCES). CTE names declared in the same statement are
+ * excluded. Comments and string literals are ignored. Conservative by design: it is
+ * the input to a deny-on-unknown ownership guard.
+ */
+export function referencedTables(sql: string): string[] {
+  const clean = stripSqlNoise(sql);
+  // CTE names declared in this statement (WITH a AS (...), b AS (...)) are not tables.
+  const cteNames = new Set<string>();
+  for (const m of clean.matchAll(new RegExp(`\\b(?:WITH(?:\\s+RECURSIVE)?|,)\\s*(${SQL_ID})\\s+AS\\s*\\(`, "gi"))) {
+    cteNames.add(unquoteSqlIdent(m[1]!).toLowerCase());
+  }
+  const out = new Map<string, string>(); // lowercased → first-seen spelling
+  for (const re of TABLE_POSITION_PATTERNS) {
+    for (const m of clean.matchAll(re)) {
+      const name = unquoteSqlIdent(m[1]!);
+      const key = name.toLowerCase();
+      if (!cteNames.has(key) && !out.has(key)) out.set(key, name);
+    }
+  }
+  return [...out.values()];
+}
+
+function assertStatementOwned(stmt: string, appId: string, ownerByTable: Map<string, string>): void {
+  for (const t of referencedTables(stmt)) {
+    const key = t.toLowerCase();
+    if (key.startsWith("sqlite_") || key.startsWith("__")) {
+      throw new Error(`aux migration blocked — "${t}" is a core-internal table; app SQL may not touch it`);
+    }
+    const owner = ownerByTable.get(key);
+    if (owner === undefined) {
+      throw new Error(
+        `aux migration blocked — "${t}" is not a registered table; tables are created via ` +
+          `SchemaDescriptors (registerSchemas), not aux SQL`,
+      );
+    }
+    if (owner !== appId) {
+      throw new Error(`aux migration blocked — "${t}" is owned by "${owner}", not "${appId}"`);
+    }
+  }
+}
+
+async function ensureAuxMigrationsTable(db: SqlDb): Promise<void> {
+  await db.execute(
+    `CREATE TABLE IF NOT EXISTS ${ident(AUX_MIGRATIONS_TABLE)} (` +
+      `app_id TEXT NOT NULL, version INTEGER NOT NULL, applied_at TEXT NOT NULL, ` +
+      `PRIMARY KEY (app_id, version))`,
+  );
+}
+
+/**
+ * Apply an app's auxiliary raw-SQL migrations to the shared suite DB — the core
+ * mechanism for what descriptors can't express (triggers, CHECK-bearing indexes, …),
+ * replacing per-app Tauri-plugin SQL migrations. Run it AFTER {@link registerSchemas}
+ * (the tables the SQL touches must already be registered).
+ *
+ * Semantics:
+ *   - Steps are versioned and **append-only per app**: the `steps` array must be strictly
+ *     ascending; already-recorded `(appId, version)` pairs are skipped (idempotent re-run);
+ *     a NEW step below the app's high-water mark is rejected.
+ *   - **Ownership guard** (security): every statement may reference ONLY tables whose
+ *     registry owner is `appId`. Common tables (`owner: "common"`) need a core-owned step
+ *     (`appId === "common"`). Unregistered or core-internal tables are rejected outright.
+ *     All pending statements are guarded BEFORE any SQL is executed.
+ */
+export async function registerAuxMigrations(
+  db: SqlDb,
+  appId: string,
+  steps: AuxMigrationStep[],
+): Promise<AuxMigrationResult> {
+  if (!appId) throw new Error("registerAuxMigrations: appId is required");
+  for (let i = 0; i < steps.length; i++) {
+    const v = steps[i]!.version;
+    if (!Number.isInteger(v) || v < 1) {
+      throw new Error(`aux migration rejected — version must be a positive integer (got ${v})`);
+    }
+    if (i > 0 && v <= steps[i - 1]!.version) {
+      throw new Error(
+        `aux migration rejected — steps must be strictly ascending (version ${v} after ${steps[i - 1]!.version})`,
+      );
+    }
+  }
+
+  await ensureAuxMigrationsTable(db);
+  const rows = await db.select<{ version: number }>(
+    `SELECT version FROM ${ident(AUX_MIGRATIONS_TABLE)} WHERE app_id = ? ORDER BY version`,
+    [appId],
+  );
+  const done = new Set(rows.map((r) => Number(r.version)));
+  const highWater = rows.length ? Math.max(...rows.map((r) => Number(r.version))) : 0;
+
+  const pending = steps.filter((s) => !done.has(s.version));
+  const skipped = steps.filter((s) => done.has(s.version)).map((s) => s.version);
+  for (const s of pending) {
+    if (s.version < highWater) {
+      throw new Error(
+        `aux migration rejected — version ${s.version} is below the already-applied ` +
+          `high-water mark ${highWater} for "${appId}" (append-only)`,
+      );
+    }
+  }
+
+  // Guard EVERY pending statement against the registry before executing ANY of them.
+  const registry = await loadRegistry(db);
+  const ownerByTable = new Map<string, string>();
+  for (const s of Object.values(registry)) ownerByTable.set(tableName(s).toLowerCase(), s.owner);
+  for (const step of pending) for (const stmt of step.sql) assertStatementOwned(stmt, appId, ownerByTable);
+
+  const applied: number[] = [];
+  for (const step of pending) {
+    for (const stmt of step.sql) await db.execute(stmt);
+    await db.execute(
+      `INSERT INTO ${ident(AUX_MIGRATIONS_TABLE)} (app_id, version, applied_at) VALUES (?, ?, ?)`,
+      [appId, step.version, new Date().toISOString()],
+    );
+    applied.push(step.version);
+  }
+  return { applied, skipped };
 }
 
 // ── Access governance (pure) ─────────────────────────────────────────────────
