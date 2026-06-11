@@ -24,7 +24,7 @@
  */
 import * as React from "react";
 import { NavLink, useLocation } from "react-router-dom";
-import { MoreHorizontal, Plus, type LucideIcon } from "lucide-react";
+import { ChevronDown, ChevronUp, MoreHorizontal, Plus, type LucideIcon } from "lucide-react";
 import { cn } from "./cn.js";
 import { Sheet, SheetContent, SheetClose } from "./sheet.js";
 import { SupportedByTokans } from "./attribution.js";
@@ -148,6 +148,80 @@ function ActionRow({ action, onNavigate }: { action: SuiteAction; onNavigate?: (
   );
 }
 
+/**
+ * A vertically-scrollable region for the desktop sidebar nav. The scrollbar is hidden; instead,
+ * floating chevron buttons fade in at the top/bottom edge **only when** there is more to scroll in
+ * that direction, and brighten on hover. This keeps the sidebar's own height independent of the
+ * page content — a long nav scrolls inside the sidebar without affecting (or being affected by) the
+ * main content's scroll.
+ */
+function SidebarScrollArea({ children }: { children: React.ReactNode }): React.ReactElement {
+  const ref = React.useRef<HTMLDivElement>(null);
+  const [canUp, setCanUp] = React.useState(false);
+  const [canDown, setCanDown] = React.useState(false);
+
+  const update = React.useCallback(() => {
+    const el = ref.current;
+    if (!el) return;
+    setCanUp(el.scrollTop > 1);
+    setCanDown(el.scrollTop + el.clientHeight < el.scrollHeight - 1);
+  }, []);
+
+  React.useEffect(() => {
+    update();
+    const el = ref.current;
+    if (!el) return;
+    // Re-evaluate when the viewport, the scroll region, or its contents change size.
+    const ro = new ResizeObserver(update);
+    ro.observe(el);
+    for (const child of Array.from(el.children)) ro.observe(child);
+    window.addEventListener("resize", update);
+    return () => {
+      ro.disconnect();
+      window.removeEventListener("resize", update);
+    };
+  }, [update]);
+
+  const scrollByStep = (dir: 1 | -1) =>
+    ref.current?.scrollBy({ top: dir * 160, behavior: "smooth" });
+
+  const edgeBtn =
+    "absolute inset-x-0 z-10 flex h-7 items-center justify-center text-muted-foreground " +
+    "opacity-60 transition-opacity hover:opacity-100";
+
+  return (
+    <div className="group/scroll relative min-h-0 flex-1">
+      {canUp && (
+        <button
+          type="button"
+          aria-label="Scroll navigation up"
+          onClick={() => scrollByStep(-1)}
+          className={cn(edgeBtn, "top-0 bg-gradient-to-b from-card via-card/90 to-transparent")}
+        >
+          <ChevronUp className="h-4 w-4" />
+        </button>
+      )}
+      <div
+        ref={ref}
+        onScroll={update}
+        className="h-full overflow-y-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+      >
+        {children}
+      </div>
+      {canDown && (
+        <button
+          type="button"
+          aria-label="Scroll navigation down"
+          onClick={() => scrollByStep(1)}
+          className={cn(edgeBtn, "bottom-0 bg-gradient-to-t from-card via-card/90 to-transparent")}
+        >
+          <ChevronDown className="h-4 w-4" />
+        </button>
+      )}
+    </div>
+  );
+}
+
 export function SuiteShell(props: SuiteShellProps): React.ReactElement {
   const {
     brand, nav, children, centralActions = [], centralLabel = "Menu", centralIcon,
@@ -195,30 +269,34 @@ export function SuiteShell(props: SuiteShellProps): React.ReactElement {
     ) : null;
 
   return (
-    <div className="flex min-h-screen w-full flex-col md:flex-row">
-      {/* Desktop sidebar */}
+    // The shell is bounded to the viewport height so only <main> scrolls — the sidebar's height is
+    // independent of the page content (it never grows with, or scrolls away with, tall content).
+    <div className="flex h-screen w-full flex-col overflow-hidden md:flex-row">
+      {/* Desktop sidebar — fixed full-height; its nav scrolls inside SidebarScrollArea. */}
       <aside className="hidden w-60 shrink-0 flex-col border-r bg-card md:flex">
         <div className="flex items-center gap-2 px-4 py-4 text-lg font-semibold">{brand}</div>
         {sidebarTop}
-        <nav className="mt-2 flex flex-col gap-1 px-2">
-          {nav.map((it) => {
-            const Icon = it.icon;
-            return (
-              <NavLink
-                key={it.to}
-                to={it.to}
-                end={it.end ?? it.to === "/"}
-                className={navLinkClass(it.state)}
-                title={it.state === "nudge" ? it.lockHint : undefined}
-              >
-                <Icon className="h-4 w-4" />
-                <span className="flex-1">{it.label}</span>
-                {it.state === "nudge" && <LockGlyph />}
-              </NavLink>
-            );
-          })}
-        </nav>
-        <div className="mt-auto flex flex-col gap-1 border-t p-2">
+        <SidebarScrollArea>
+          <nav className="mt-2 flex flex-col gap-1 px-2 pb-2">
+            {nav.map((it) => {
+              const Icon = it.icon;
+              return (
+                <NavLink
+                  key={it.to}
+                  to={it.to}
+                  end={it.end ?? it.to === "/"}
+                  className={navLinkClass(it.state)}
+                  title={it.state === "nudge" ? it.lockHint : undefined}
+                >
+                  <Icon className="h-4 w-4" />
+                  <span className="flex-1">{it.label}</span>
+                  {it.state === "nudge" && <LockGlyph />}
+                </NavLink>
+              );
+            })}
+          </nav>
+        </SidebarScrollArea>
+        <div className="flex flex-col gap-1 border-t p-2">
           {actions.map((a) => (
             <ActionRow key={a.key} action={a} />
           ))}
@@ -227,7 +305,7 @@ export function SuiteShell(props: SuiteShellProps): React.ReactElement {
       </aside>
 
       {/* Main column */}
-      <div className="flex min-w-0 flex-1 flex-col">
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col">
         {/* Top bar: brand (mobile only) left, profile/account right (both viewports). */}
         <header className="flex items-center justify-between border-b bg-card px-4 py-3">
           <div className="flex items-center gap-2 font-semibold md:invisible">{brand}</div>
@@ -237,7 +315,7 @@ export function SuiteShell(props: SuiteShellProps): React.ReactElement {
           </div>
         </header>
 
-        <main className="flex-1 overflow-y-auto px-4 py-6 pb-24 md:px-8 md:pb-8">
+        <main className="min-h-0 flex-1 overflow-y-auto px-4 py-6 pb-24 md:px-8 md:pb-8">
           <div className={cn("w-full", contentClassName)}>{children}</div>
         </main>
       </div>
@@ -264,11 +342,25 @@ export function SuiteShell(props: SuiteShellProps): React.ReactElement {
           (() => {
             const A = centralActions[0];
             const AIcon = A.icon;
-            return (
+            const centerCls = "flex flex-1 flex-col items-center gap-0.5 py-2 text-[11px]";
+            // A single central action may be a link (`to`) or a button (`onSelect`). Render the
+            // matching element so a link-based central button actually navigates.
+            return A.to ? (
+              <NavLink
+                to={A.to}
+                end={A.to === "/"}
+                className={({ isActive }) =>
+                  cn(centerCls, isActive ? "text-primary" : "text-muted-foreground")
+                }
+              >
+                <AIcon className="h-5 w-5" />
+                {A.label}
+              </NavLink>
+            ) : (
               <button
                 type="button"
                 onClick={fireCentral}
-                className="flex flex-1 flex-col items-center gap-0.5 py-2 text-[11px] text-muted-foreground"
+                className={cn(centerCls, "text-muted-foreground")}
               >
                 <AIcon className="h-5 w-5" />
                 {A.label}
