@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import {
-  createExcelBackup, sheetNameFor, suiteSourceForApp,
+  createExcelBackup, sheetNameFor, suiteSourceForApp, suiteSourceFull,
   HASHED_VALUE_RE, BACKUP_FORMAT,
   type XlsxModule, type BackupSource,
 } from "./index.js";
@@ -214,12 +214,33 @@ describe("importWorkbook", () => {
     expect(ids).toEqual(["a1", "a2"]); // stale row gone
   });
 
-  it("refuses a foreign app's backup unless forced", async () => {
+  it("refuses a foreign app's backup unless forced (no shared source)", async () => {
     const { bytes } = await make([appSource().src]).exportWorkbook();
     const otherDb = memDb({ accounts: { columns: ["id", "name", "balance"], rows: [] } });
     const other = createExcelBackup({ appId: "otherapp", sources: [{ id: "app", db: otherDb.db }], xlsx });
     await expect(other.importWorkbook(bytes)).rejects.toThrow(/belongs to "myapp"/);
     await expect(other.importWorkbook(bytes, { force: true })).resolves.toBeTruthy();
+  });
+
+  it("a foreign app's workbook still restores the SHARED suite store (per-app sheets skipped)", async () => {
+    // myapp exports its own DB + the suite store…
+    const { bytes } = await make([appSource().src, suiteSource().src]).exportWorkbook();
+    // …and otherapp (different appId) imports: suite sheets land, app sheets are skipped.
+    const otherApp = memDb({ accounts: { columns: ["id", "name", "balance"], rows: [] } });
+    const otherSuite = memDb();
+    const report = await createExcelBackup({
+      appId: "otherapp",
+      sources: [
+        { id: "app", db: otherApp.db },
+        { id: "suite", db: otherSuite.db, descriptors: [credsDescriptor], shared: true },
+      ],
+      xlsx,
+    }).importWorkbook(bytes);
+
+    expect(otherSuite.tables.get("creds")?.rows).toHaveLength(1); // shared store restored
+    expect(otherApp.tables.get("accounts")?.rows).toHaveLength(0); // foreign per-app data NOT written
+    expect(report.foreignAppSheets.sort()).toEqual(["accounts", "settings"]);
+    expect(report.tables.map((t) => t.table)).toEqual(["creds"]);
   });
 
   it("rejects files that are not sharedcorelib backups", async () => {
@@ -262,5 +283,37 @@ describe("suiteSourceForApp", () => {
     }, "myapp");
     expect(src.tables?.sort()).toEqual(["common_ice", "creds"]);
     expect(src.descriptors).toHaveLength(2);
+    expect(src.shared).toBe(true);
+  });
+});
+
+describe("suiteSourceFull (the suite-wide everything dump)", () => {
+  it("exports EVERY suite table — other apps' included — with the full registry driving hashing", async () => {
+    const otherSecret: SchemaDescriptor = {
+      ...credsDescriptor, namespace: "otherapp", name: "Token", dbAlias: "other_tokens", owner: "otherapp",
+      fields: [
+        { name: "id", dataType: "id", keyField: true, required: true },
+        { name: "service", dataType: "string" },
+        { name: "value", dataType: "string", confidentiality: "Secret" },
+      ],
+    };
+    const suite = memDb({
+      creds: { columns: ["id", "site", "login_password"], rows: [{ id: "c1", site: "example.com", login_password: "hunter2" }] },
+      other_tokens: { columns: ["id", "service", "value"], rows: [{ id: "t1", service: "mail", value: "tok-xyz" }] },
+      [REGISTRY_TABLE]: { columns: ["qualified", "descriptor"], rows: [] },
+    });
+    const src = suiteSourceFull(suite.db, {
+      "myapp#Credential": credsDescriptor,
+      "otherapp#Token": otherSecret,
+    });
+    expect(src.shared).toBe(true);
+    expect(src.tables).toBeUndefined(); // auto-discover: ALL tables, not an owner slice
+
+    const { bytes, report } = await make([src]).exportWorkbook();
+    expect(report.tables.map((t) => t.table).sort()).toEqual(["creds", "other_tokens"]); // registry excluded
+    const wb = readWb(bytes);
+    // another app's Secret field is STILL hashed because the full registry came along
+    expect(String(sheetRows(wb, "other_tokens")[0]!.value)).toMatch(HASHED_VALUE_RE);
+    expect(sheetRows(wb, "other_tokens")[0]!.service).toBe("mail");
   });
 });

@@ -53,6 +53,12 @@ export interface BackupSource {
   tables?: string[];
   /** Descriptors governing (some of) this source's tables — drive field-level hashing. */
   descriptors?: SchemaDescriptor[];
+  /**
+   * Marks a SHARED store (the suite DB): its sheets restore from any suite app's
+   * workbook, not only one produced by this `appId` (the per-app sources still
+   * refuse a foreign workbook unless `force`).
+   */
+  shared?: boolean;
 }
 
 export interface ExcelBackupConfig {
@@ -100,6 +106,8 @@ export interface ImportReport {
   }>;
   /** Sheets that matched no known source (left untouched). */
   unmatchedSheets: string[];
+  /** Sheets skipped because the workbook came from another app (non-shared sources only). */
+  foreignAppSheets: string[];
 }
 
 export interface ExcelBackup {
@@ -185,7 +193,20 @@ function hashedColumnsFor(
  */
 export function suiteSourceForApp(db: SqlDb, registry: SchemaRegistry, appId: string): BackupSource {
   const descriptors = Object.values(registry).filter((s) => s.owner === appId || s.owner === "common");
-  return { id: "suite", db, tables: descriptors.map(tableName), descriptors };
+  return { id: "suite", db, tables: descriptors.map(tableName), descriptors, shared: true };
+}
+
+/**
+ * Convenience: the {@link BackupSource} for the ENTIRE shared suite DB — every table
+ * every installed app has registered (auto-discovered from `sqlite_master`), with the
+ * FULL registry's descriptors driving field-level hashing. This is the suite-wide
+ * "everything the system has" dump: any app's Settings export carries all apps' shared
+ * data, and the resulting workbook restores into any suite app on another machine.
+ * (Per-app legacy DBs of OTHER apps live in their own sandboxes and are not reachable —
+ * they enter the suite dump as their backfills into `suite.db` land.)
+ */
+export function suiteSourceFull(db: SqlDb, registry: SchemaRegistry): BackupSource {
+  return { id: "suite", db, descriptors: Object.values(registry), shared: true };
 }
 
 // ── Factory ──────────────────────────────────────────────────────────────────
@@ -290,7 +311,10 @@ export function createExcelBackup(cfg: ExcelBackupConfig): ExcelBackup {
       if ((meta.formatVersion ?? 0) > BACKUP_FORMAT_VERSION) {
         throw new Error(`backup format v${meta.formatVersion} is newer than this app understands (v${BACKUP_FORMAT_VERSION})`);
       }
-      if (meta.appId !== cfg.appId && !opts.force) {
+      // A foreign app's workbook may still restore SHARED stores (the suite DB is one
+      // store for every app); only the per-app (non-shared) sources refuse it.
+      const foreign = meta.appId !== cfg.appId && !opts.force;
+      if (foreign && !cfg.sources.some((s) => s.shared)) {
         throw new Error(`backup belongs to "${meta.appId}", not "${cfg.appId}" — pass force to import anyway`);
       }
 
@@ -305,12 +329,16 @@ export function createExcelBackup(cfg: ExcelBackupConfig): ExcelBackup {
         }
       }
 
-      const report: ImportReport = { tables: [], unmatchedSheets: [] };
+      const report: ImportReport = { tables: [], unmatchedSheets: [], foreignAppSheets: [] };
       for (const m of mappings) {
         const src = cfg.sources.find((s) => s.id === m.sourceId);
         const ws = wb.Sheets[m.sheet];
         if (!src || !ws || excluded.has(m.table)) {
           report.unmatchedSheets.push(m.sheet);
+          continue;
+        }
+        if (foreign && !src.shared) {
+          report.foreignAppSheets.push(m.sheet);
           continue;
         }
         const safeTable = m.table.replace(/[^A-Za-z0-9_]/g, "_");
