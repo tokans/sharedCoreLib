@@ -41,7 +41,7 @@ themselves (myFinance wires this through a `prebuild` step).
 
 ## Features
 
-Fifteen subsystems, each a subpath export. Every factory takes a **resolved config
+Twenty-two subsystems, each a subpath export. Every factory takes a **resolved config
 object** and closes over its own state — there is no module-level singleton, so two
 apps can hold independent instances in one process. See [`CONTRACT.md`](./CONTRACT.md)
 for the per-subsystem app-config shape and what stays in-app.
@@ -52,9 +52,9 @@ ice (9), sync-kernel (10), ui (11), the suite update manager (12), entitlement
 grants (13), the schema registry (14), and the shared DB runtime (15). Masters (4) hold
 **both common and app-specific** tables. Tiers (5) provides the shared **standard top
 tiers** (Patron/Partner) but each app's earned ladder, gates (6) and reminders (7) are
-**app-specific**: the mechanism is shared, the data per app. Status: **all 21 subsystems
+**app-specific**: the mechanism is shared, the data per app. Status: **all 22 subsystems
 are implemented and unit-tested** (15 original + the v3 spine/recovery/breakglass/account/
-pii/multiuser additions). The suite
+pii/multiuser additions + the Excel backup/restore engine). The suite
 updater (12) ships the verification **engine** (delegation-chain verify, anti-rollback,
 freshness, verify-at-load) + types; each app injects the network/fs/lease adapters, the
 hot-reload/stage handlers, and the **native-shell** confirmation UI (see `CONTRACT.md` §7).
@@ -82,6 +82,7 @@ hot-reload/stage handlers, and the **native-shell** confirmation UI (see `CONTRA
 | 19 | **Account client** | `sharedcorelib/account` | `createAccountClient` — the tokans.org client (registered/paid only): register/login, recovery + break-glass escrow, dead-man's-switch heartbeat (+"I'm here" cancel), promise-card redeem, offline ed25519 receipt verify. **Ciphertext-only** egress (`assertNoPlaintextSecrets`). Wire shapes: `contracts/account-wire.md` | a TLS-only `HttpTransport`; optional `serverPubkeyHex` |
 | 20 | **PII egress guard** | `sharedcorelib/pii` | `scanPayload`/`redactText`/`deidentifyText` (deterministic: email/phone/PAN/Aadhaar/Luhn-card/IP, no LLM), pluggable `PiiEngine` (OpenMed sidecar stub), SSR-safe `PiiEgressDialog` (gated confirm-before-egress) | optional stronger engine (paid Python sidecar) |
 | 21 | **Multi-user crypto** | `sharedcorelib/multiuser` | Shared key **multi-wrapped per user** (`multiWrap`/`addMember`/`removeMember` with rotation), per-user **private compartments** (`canAccessCompartment`/`syncTargets`/`rowsForRecipient`), `coUserRewrap` co-user recovery. Reuses the recovery seal. ⚠ rollout is a human staging decision | per-user keys; row `compartment` tags |
+| 22 | **Excel backup/restore** | `sharedcorelib/backup` | Whole-store backup every app exposes from Settings: `createExcelBackup` → `plan`/`exportWorkbook`/`importWorkbook` — one `.xlsx`, one sheet per table (own DB + the app's suite-DB slice via `suiteSourceForApp`), `_meta`/`_tables`/`_schemas` sheets for portable restore on a new machine. Secret fields (descriptor confidentiality ≥ `Secret`, or password/token-named columns in descriptorless tables) export as one-way `sha256:` fingerprints and are **skipped on import**. Settings UI: `BackupPanel` in `sharedcorelib/ui` | its `SqlDb` handles + `appId` + its own SheetJS module (`XlsxModule` — injected, not a core dep); on Tauri a `save` handler (dialog+fs) for `BackupPanel` |
 
 ## Masters
 

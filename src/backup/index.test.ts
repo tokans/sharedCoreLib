@@ -1,0 +1,243 @@
+import { describe, it, expect } from "vitest";
+import {
+  createExcelBackup, sheetNameFor, suiteSourceForApp,
+  HASHED_VALUE_RE, BACKUP_FORMAT,
+  type XlsxModule, type BackupSource,
+} from "./index.js";
+import type { SchemaDescriptor } from "../schema/index.js";
+import { REGISTRY_TABLE, type SqlDb } from "../db/index.js";
+
+// ── Injected fake SheetJS module (workbook = JSON; core never imports `xlsx`) ─
+
+interface FakeSheet { __rows: Record<string, unknown>[] }
+interface FakeWb { SheetNames: string[]; Sheets: Record<string, FakeSheet> }
+
+function fakeXlsx(): XlsxModule {
+  return {
+    utils: {
+      book_new: () => ({ SheetNames: [], Sheets: {} }) as FakeWb,
+      book_append_sheet: (wb, ws, name) => {
+        const w = wb as FakeWb;
+        w.SheetNames.push(name);
+        w.Sheets[name] = ws as FakeSheet;
+      },
+      json_to_sheet: (rows) => ({ __rows: rows as Record<string, unknown>[] }),
+      sheet_to_json: <T,>(ws: unknown) => ((ws as FakeSheet).__rows ?? []) as T[],
+    },
+    write: (wb) => new TextEncoder().encode(JSON.stringify(wb)).buffer as ArrayBuffer,
+    read: (data) => {
+      const bytes = data instanceof Uint8Array ? data : new Uint8Array(data);
+      return JSON.parse(new TextDecoder().decode(bytes)) as FakeWb;
+    },
+  };
+}
+const xlsx = fakeXlsx();
+const readWb = (bytes: Uint8Array): FakeWb => xlsx.read(bytes) as FakeWb;
+const sheetRows = (wb: FakeWb, name: string): Record<string, unknown>[] => wb.Sheets[name]?.__rows ?? [];
+
+// ── In-memory fake SqlDb understanding exactly the SQL the engine issues ─────
+
+interface MemTable { columns: string[]; rows: Record<string, unknown>[] }
+
+function memDb(initial: Record<string, MemTable> = {}): { db: SqlDb; tables: Map<string, MemTable> } {
+  const tables = new Map<string, MemTable>(Object.entries(initial));
+  const db: SqlDb = {
+    async select<T>(sql: string): Promise<T[]> {
+      if (/FROM sqlite_master/i.test(sql)) {
+        return [...tables.keys()].sort().map((name) => ({ name })) as T[];
+      }
+      const pragma = /^PRAGMA table_info\("(.+)"\)$/.exec(sql);
+      if (pragma) return (tables.get(pragma[1]!)?.columns ?? []).map((name) => ({ name })) as T[];
+      const all = /^SELECT \* FROM "(.+)"$/.exec(sql);
+      if (all) return (tables.get(all[1]!)?.rows ?? []) as T[];
+      throw new Error(`memDb: unhandled select: ${sql}`);
+    },
+    async execute(sql: string, params: unknown[] = []) {
+      const create = /^CREATE TABLE IF NOT EXISTS "(.+?)" \(([\s\S]+)\)$/.exec(sql);
+      if (create) {
+        const cols = [...create[2]!.matchAll(/^\s*"([A-Za-z0-9_]+)"\s/gm)].map((m) => m[1]!);
+        if (!tables.has(create[1]!)) tables.set(create[1]!, { columns: cols, rows: [] });
+        return {};
+      }
+      if (/^CREATE (UNIQUE )?INDEX/.test(sql)) return {};
+      const del = /^DELETE FROM "(.+)"$/.exec(sql);
+      if (del) { const t = tables.get(del[1]!); if (t) t.rows = []; return {}; }
+      const ins = /^INSERT OR REPLACE INTO "(.+?)" \((.+?)\) VALUES/.exec(sql);
+      if (ins) {
+        const t = tables.get(ins[1]!);
+        if (!t) throw new Error(`memDb: no table ${ins[1]}`);
+        const cols = ins[2]!.split(", ").map((c) => c.replace(/"/g, ""));
+        const row: Record<string, unknown> = {};
+        cols.forEach((c, i) => { row[c] = params[i]; });
+        t.rows.push(row);
+        return { rowsAffected: 1 };
+      }
+      throw new Error(`memDb: unhandled execute: ${sql}`);
+    },
+  };
+  return { db, tables };
+}
+
+// ── Fixtures ─────────────────────────────────────────────────────────────────
+
+const credsDescriptor: SchemaDescriptor = {
+  namespace: "myapp", name: "Credential", schemaType: "Table",
+  confidentiality: "Confidential", owner: "myapp", dbAlias: "creds",
+  fields: [
+    { name: "id", dataType: "id", keyField: true, required: true },
+    { name: "site", dataType: "string" },
+    { name: "login_password", dataType: "string", confidentiality: "Secret" },
+  ],
+};
+
+function appSource(): { src: BackupSource; tables: Map<string, MemTable> } {
+  const { db, tables } = memDb({
+    accounts: { columns: ["id", "name", "balance"], rows: [
+      { id: "a1", name: "Savings", balance: 1200 },
+      { id: "a2", name: "Current", balance: 300 },
+    ] },
+    settings: { columns: ["key", "value", "api_token"], rows: [
+      { key: "theme", value: "dark", api_token: "tok-123" },
+    ] },
+    [REGISTRY_TABLE]: { columns: ["qualified", "descriptor"], rows: [{ qualified: "x", descriptor: "{}" }] },
+  });
+  return { src: { id: "app", db }, tables };
+}
+
+function suiteSource(): { src: BackupSource; tables: Map<string, MemTable> } {
+  const { db, tables } = memDb({
+    creds: { columns: ["id", "site", "login_password"], rows: [
+      { id: "c1", site: "example.com", login_password: "hunter2" },
+    ] },
+  });
+  return { src: { id: "suite", db, tables: ["creds"], descriptors: [credsDescriptor] }, tables };
+}
+
+const make = (sources: BackupSource[]) =>
+  createExcelBackup({ appId: "myapp", sources, xlsx, now: () => new Date("2026-06-11T00:00:00Z") });
+
+// ── Tests ────────────────────────────────────────────────────────────────────
+
+describe("sheetNameFor", () => {
+  it("truncates to 31 chars and dedupes collisions", () => {
+    const taken = new Set<string>();
+    const long = "a_very_long_table_name_that_exceeds_excel_limit";
+    const first = sheetNameFor(long, taken);
+    const second = sheetNameFor(long, taken);
+    expect(first).toHaveLength(31);
+    expect(second).toHaveLength(31);
+    expect(second).not.toBe(first);
+    expect(second.endsWith("~2")).toBe(true);
+  });
+
+  it("strips characters Excel forbids", () => {
+    expect(sheetNameFor("a[b]:c*d?e/f\\g", new Set())).toBe("a_b__c_d_e_f_g");
+  });
+});
+
+describe("plan", () => {
+  it("discovers tables, excludes internals, and marks hashed columns by descriptor + name rule", async () => {
+    const app = appSource();
+    const suite = suiteSource();
+    const plans = await make([app.src, suite.src]).plan();
+
+    expect(plans.map((p) => p.table).sort()).toEqual(["accounts", "creds", "settings"]); // registry excluded
+    expect(plans.find((p) => p.table === "settings")?.hashedColumns).toEqual(["api_token"]); // name rule
+    expect(plans.find((p) => p.table === "creds")?.hashedColumns).toEqual(["login_password"]); // Secret field
+    expect(plans.find((p) => p.table === "creds")?.qualified).toBe("myapp#Credential");
+  });
+});
+
+describe("exportWorkbook", () => {
+  it("writes one sheet per table + meta, hashing secrets", async () => {
+    const { bytes, report } = await make([appSource().src, suiteSource().src]).exportWorkbook();
+
+    expect(report.fileNameHint).toBe("myapp-backup-2026-06-11.xlsx");
+    const wb = readWb(bytes);
+    expect(wb.SheetNames).toEqual(expect.arrayContaining(["accounts", "settings", "creds", "_meta", "_tables", "_schemas"]));
+
+    const meta = sheetRows(wb, "_meta")[0]!;
+    expect(meta.format).toBe(BACKUP_FORMAT);
+    expect(meta.appId).toBe("myapp");
+
+    const creds = sheetRows(wb, "creds")[0]!;
+    expect(creds.site).toBe("example.com");
+    expect(String(creds.login_password)).toMatch(HASHED_VALUE_RE); // never plaintext
+    expect(String(creds.login_password)).not.toContain("hunter2");
+    expect(String(sheetRows(wb, "settings")[0]!.api_token)).toMatch(HASHED_VALUE_RE);
+    // non-secret data is in the clear (it's a usable backup)
+    expect(sheetRows(wb, "accounts")[0]).toMatchObject({ id: "a1", name: "Savings", balance: 1200 });
+  });
+
+  it("hashes deterministically (same secret → same fingerprint)", async () => {
+    const a = await make([suiteSource().src]).exportWorkbook();
+    const b = await make([suiteSource().src]).exportWorkbook();
+    expect(sheetRows(readWb(a.bytes), "creds")[0]!.login_password)
+      .toBe(sheetRows(readWb(b.bytes), "creds")[0]!.login_password);
+  });
+});
+
+describe("importWorkbook", () => {
+  it("round-trips data onto a fresh machine, skipping hashed secrets and creating descriptor-backed tables", async () => {
+    const { bytes } = await make([appSource().src, suiteSource().src]).exportWorkbook();
+
+    // Fresh machine: app tables exist (migrations ran) but are empty; suite table absent.
+    const freshApp = memDb({
+      accounts: { columns: ["id", "name", "balance"], rows: [] },
+      settings: { columns: ["key", "value", "api_token"], rows: [] },
+    });
+    const freshSuite = memDb();
+    const report = await make([
+      { id: "app", db: freshApp.db },
+      { id: "suite", db: freshSuite.db, descriptors: [credsDescriptor] },
+    ]).importWorkbook(bytes);
+
+    expect(freshApp.tables.get("accounts")?.rows).toHaveLength(2);
+    expect(freshApp.tables.get("accounts")?.rows[0]).toMatchObject({ id: "a1", name: "Savings", balance: 1200 });
+    // hashed columns skipped → a fingerprint is never written as a secret
+    expect(freshApp.tables.get("settings")?.rows[0]).not.toHaveProperty("api_token");
+    const credsReport = report.tables.find((t) => t.table === "creds")!;
+    expect(credsReport.created).toBe(true); // rebuilt from the embedded descriptor
+    expect(credsReport.skippedHashedColumns).toEqual(["login_password"]);
+    expect(freshSuite.tables.get("creds")?.rows[0]).toMatchObject({ id: "c1", site: "example.com" });
+    expect(freshSuite.tables.get("creds")?.rows[0]).not.toHaveProperty("login_password");
+  });
+
+  it("replace mode clears matched tables first", async () => {
+    const { bytes } = await make([appSource().src]).exportWorkbook();
+    const target = memDb({
+      accounts: { columns: ["id", "name", "balance"], rows: [{ id: "old", name: "Stale", balance: 1 }] },
+      settings: { columns: ["key", "value", "api_token"], rows: [] },
+    });
+    await make([{ id: "app", db: target.db }]).importWorkbook(bytes, { mode: "replace" });
+    const ids = target.tables.get("accounts")!.rows.map((r) => r.id);
+    expect(ids).toEqual(["a1", "a2"]); // stale row gone
+  });
+
+  it("refuses a foreign app's backup unless forced", async () => {
+    const { bytes } = await make([appSource().src]).exportWorkbook();
+    const otherDb = memDb({ accounts: { columns: ["id", "name", "balance"], rows: [] } });
+    const other = createExcelBackup({ appId: "otherapp", sources: [{ id: "app", db: otherDb.db }], xlsx });
+    await expect(other.importWorkbook(bytes)).rejects.toThrow(/belongs to "myapp"/);
+    await expect(other.importWorkbook(bytes, { force: true })).resolves.toBeTruthy();
+  });
+
+  it("rejects files that are not sharedcorelib backups", async () => {
+    const wb = xlsx.utils.book_new();
+    xlsx.utils.book_append_sheet(wb, xlsx.utils.json_to_sheet([{ a: 1 }]), "Sheet1");
+    const bytes = new Uint8Array(xlsx.write(wb, { type: "array", bookType: "xlsx" }));
+    await expect(make([appSource().src]).importWorkbook(bytes)).rejects.toThrow(/missing _meta/);
+  });
+});
+
+describe("suiteSourceForApp", () => {
+  it("selects the app's own + common tables with their descriptors", () => {
+    const common: SchemaDescriptor = { ...credsDescriptor, namespace: "common", name: "IceCard", dbAlias: "common_ice", owner: "common" };
+    const foreign: SchemaDescriptor = { ...credsDescriptor, namespace: "other", name: "Thing", dbAlias: "other_thing", owner: "otherapp" };
+    const src = suiteSourceForApp(memDb().db, {
+      "myapp#Credential": credsDescriptor, "common#IceCard": common, "other#Thing": foreign,
+    }, "myapp");
+    expect(src.tables?.sort()).toEqual(["common_ice", "creds"]);
+    expect(src.descriptors).toHaveLength(2);
+  });
+});

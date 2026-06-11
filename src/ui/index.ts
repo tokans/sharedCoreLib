@@ -36,6 +36,7 @@ export {
 
 // Primitive UI kit (Tailwind-styled — requires the §4.2 preset + theme.css + content glob).
 export { Sheet, SheetClose, SheetContent, type SheetSide, type SheetContentProps } from "./sheet.js";
+export { BackupPanel, type BackupPanelProps } from "./backupPanel.js";
 export {
   SuiteShell,
   type SuiteShellProps, type SuiteNavItem, type SuiteAction, type SuiteAccount,
