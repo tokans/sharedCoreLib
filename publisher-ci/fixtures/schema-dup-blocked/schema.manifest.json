@@ -1,0 +1,17 @@
+[
+  {
+    "namespace": "fixtureb",
+    "name": "Buddy",
+    "schemaType": "Table",
+    "confidentiality": "Confidential",
+    "owner": "fixture-app-b",
+    "purpose": "People the user knows — near-duplicate of fixturea#Contact.",
+    "fields": [
+      { "name": "id", "dataType": "id", "keyField": true },
+      { "name": "fullName", "dataType": "string" },
+      { "name": "email", "dataType": "string" },
+      { "name": "phone", "dataType": "string" },
+      { "name": "created_at", "dataType": "date" }
+    ]
+  }
+]

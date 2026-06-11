@@ -71,6 +71,29 @@ describe("registerSchemas", () => {
     await expect(registerSchemas(db, [conflicting])).rejects.toThrow(/conflicts/);
   });
 
+  it("a descriptor with `adopts` creates no table and is reported adopted", async () => {
+    const existing = account();
+    const { db, calls } = fakeDb({ registryRows: [{ qualified: "myfinance#Account", descriptor: JSON.stringify(existing) }] });
+    const adopting: SchemaDescriptor = {
+      ...account(), namespace: "myhealth", name: "Money", owner: "myhealth", adopts: "myfinance#Account",
+    };
+    const res = await registerSchemas(db, [adopting]);
+    expect(res.adopted).toEqual(["myhealth#Money"]);
+    expect(res.registry["myhealth#Money"]).toBeUndefined(); // not registered — it USES myfinance#Account
+    expect(calls.execute.some((c) => /CREATE TABLE/.test(c.sql) && /myhealth_Money/.test(c.sql))).toBe(false);
+
+    const dangling = { ...adopting, adopts: "nope#Missing" };
+    await expect(registerSchemas(db, [dangling])).rejects.toThrow(/adopts unknown table/);
+  });
+
+  it("duplicates: 'block' makes an un-adopted duplicate candidate a registration error", async () => {
+    const existing = account();
+    const { db } = fakeDb({ registryRows: [{ qualified: "myfinance#Account", descriptor: JSON.stringify(existing) }] });
+    const dup = account({ namespace: "myhealth", owner: "myhealth" }); // same Name + shape, other owner
+    await expect(registerSchemas(db, [dup], { duplicates: "block" })).rejects.toThrow(/duplicate-candidate/);
+    await expect(registerSchemas(db, [dup])).resolves.toBeTruthy(); // default stays warn (advisory)
+  });
+
   it("loadRegistry parses persisted descriptors", async () => {
     const { db } = fakeDb({ registryRows: [{ qualified: "myfinance#Account", descriptor: JSON.stringify(account()) }] });
     const reg = await loadRegistry(db);

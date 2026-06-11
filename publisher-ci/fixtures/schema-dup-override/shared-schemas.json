@@ -1,0 +1,17 @@
+[
+  {
+    "namespace": "fixturea",
+    "name": "Contact",
+    "schemaType": "Table",
+    "confidentiality": "Confidential",
+    "owner": "fixture-app-a",
+    "purpose": "People the user knows.",
+    "fields": [
+      { "name": "id", "dataType": "id", "keyField": true },
+      { "name": "fullName", "dataType": "string" },
+      { "name": "email", "dataType": "string" },
+      { "name": "phone", "dataType": "string" },
+      { "name": "updated_at", "dataType": "date" }
+    ]
+  }
+]

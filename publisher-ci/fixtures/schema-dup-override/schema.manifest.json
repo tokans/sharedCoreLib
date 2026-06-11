@@ -1,0 +1,18 @@
+[
+  {
+    "namespace": "fixtureb",
+    "name": "Buddy",
+    "schemaType": "Table",
+    "confidentiality": "Confidential",
+    "owner": "fixture-app-b",
+    "purpose": "Kept separate from fixturea#Contact for a reviewed reason.",
+    "duplicateOverride": "Reviewed 2026-06: different retention + lifecycle; intentional separate table.",
+    "fields": [
+      { "name": "id", "dataType": "id", "keyField": true },
+      { "name": "fullName", "dataType": "string" },
+      { "name": "email", "dataType": "string" },
+      { "name": "phone", "dataType": "string" },
+      { "name": "created_at", "dataType": "date" }
+    ]
+  }
+]

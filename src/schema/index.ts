@@ -93,6 +93,19 @@ export interface SchemaDescriptor {
   fields: FieldDescriptor[];
   relationships?: RelationshipDescriptor[];
   tags?: string[];
+  /**
+   * Qualified name ("namespace#Name") of an EXISTING registered table this app USES
+   * instead of creating its own near-duplicate. An adopting descriptor registers no
+   * table of its own — it documents the dependency and exempts the descriptor from
+   * the duplicate hard-block.
+   */
+  adopts?: string;
+  /**
+   * Reviewed justification for keeping this table even though it is a high-similarity
+   * duplicate candidate of another app's table. Exempts the descriptor from the
+   * duplicate hard-block (the candidate is still reported for review).
+   */
+  duplicateOverride?: string;
 }
 
 /** Fully-qualified key, "namespace#Name" (mirrors the schemata `core#Duration` convention). */
@@ -149,6 +162,8 @@ export const schemaDescriptorSchema = z.object({
   fields: z.array(fieldSchema).min(1),
   relationships: z.array(relationshipSchema).optional(),
   tags: z.array(z.string()).optional(),
+  adopts: z.string().regex(/^[^#\s]+#[^#\s]+$/, 'must be a qualified name "namespace#Name"').optional(),
+  duplicateOverride: z.string().min(1).max(2000).optional(),
 }).strict();
 
 export interface ValidationIssue {
@@ -191,6 +206,9 @@ export function validateDescriptor(input: unknown): { ok: boolean; issues: Valid
   }
   if (s.schemaType === "Table" && !s.fields.some((f) => f.keyField)) {
     issues.push({ schema: q, message: "a Table needs at least one keyField" });
+  }
+  if (s.adopts === q) {
+    issues.push({ schema: q, field: "adopts", message: "a schema cannot adopt itself" });
   }
   return { ok: issues.length === 0, issues, value: s };
 }
@@ -319,13 +337,78 @@ export type SchemaRegistry = Record<string, SchemaDescriptor>;
 const fieldShapeKey = (s: SchemaDescriptor): string =>
   s.fields.map((f) => `${f.name}:${f.dataType}`).sort().join(",");
 
+// ── Duplicate-candidate heuristic ────────────────────────────────────────────
+
+/** Jaccard similarity of significant column-name sets at/above which two cross-owner
+ *  tables are duplicate candidates. */
+export const DUPLICATE_SIMILARITY_THRESHOLD = 0.7;
+
+/** Standard audit/sync/identity columns — present on most tables, so they carry no
+ *  duplication signal and are ignored by the similarity heuristic. */
+const NON_SIGNIFICANT_COLUMNS = new Set([
+  "id", "uuid", "guid",
+  "createdat", "createdon", "createdby", "updatedat", "updatedon", "updatedby",
+  "modifiedat", "modifiedon", "modifiedby", "deletedat", "deleted", "tombstone",
+  "version", "rev", "revision", "dirty",
+  "syncstate", "syncstatus", "lastsyncedat", "syncedat", "deviceid",
+]);
+
+const normColumn = (n: string): string => n.toLowerCase().replace(/[^a-z0-9]/g, "");
+
+const significantColumns = (s: SchemaDescriptor): Set<string> => {
+  const out = new Set<string>();
+  for (const f of s.fields) {
+    const n = normColumn(f.name);
+    if (n && !NON_SIGNIFICANT_COLUMNS.has(n)) out.add(n);
+  }
+  return out;
+};
+
+/** Similarity (Jaccard, 0..1) of two tables' significant column-name sets. */
+export function columnSimilarity(a: SchemaDescriptor, b: SchemaDescriptor): number {
+  const as = significantColumns(a), bs = significantColumns(b);
+  if (!as.size || !bs.size) return 0;
+  let inter = 0;
+  for (const c of as) if (bs.has(c)) inter++;
+  return inter / (as.size + bs.size - inter);
+}
+
+/** Cross-owner duplicate candidate: exact Name+shape look-alike, OR high column-name
+ *  overlap (≥ {@link DUPLICATE_SIMILARITY_THRESHOLD} Jaccard over ≥ 2 significant columns,
+ *  standard audit/sync columns ignored). */
+function isDuplicateCandidate(p: SchemaDescriptor, r: SchemaDescriptor): boolean {
+  if (r.owner === p.owner) return false;
+  if (r.name === p.name && fieldShapeKey(r) === fieldShapeKey(p)) return true;
+  const as = significantColumns(p), bs = significantColumns(r);
+  if (!as.size || !bs.size) return false;
+  let inter = 0;
+  for (const c of as) if (bs.has(c)) inter++;
+  if (inter < 2) return false;
+  return inter / (as.size + bs.size - inter) >= DUPLICATE_SIMILARITY_THRESHOLD;
+}
+
+export interface RegistryCheckOptions {
+  /**
+   * How to treat cross-owner duplicate candidates:
+   *   - `"warn"` (default) — reported in `duplicateCandidates`, advisory only.
+   *   - `"block"` — a candidate is a CONFLICT (fails the check) unless the proposed
+   *     descriptor `adopts` the existing table or carries a reviewed `duplicateOverride`.
+   */
+  duplicates?: "block" | "warn";
+}
+
 /**
  * Check a batch of proposed schemas (an app being published) against the registry.
  * Reports per-schema status (new / identical / mergeable / conflict) and flags
- * cross-owner duplicate candidates (same Name + field shape) so the same data isn't
- * replicated under two tables.
+ * cross-owner duplicate candidates (same Name + field shape, or high column-name
+ * similarity) so the same data isn't replicated under two tables. With
+ * `{ duplicates: "block" }` an un-adopted, un-overridden candidate is a hard conflict.
  */
-export function checkAgainstRegistry(proposed: SchemaDescriptor[], registry: SchemaRegistry): RegistryCheckResult {
+export function checkAgainstRegistry(
+  proposed: SchemaDescriptor[],
+  registry: SchemaRegistry,
+  opts: RegistryCheckOptions = {},
+): RegistryCheckResult {
   const entries: RegistryCheckEntry[] = [];
   for (const p of proposed) {
     const q = qualifiedName(p);
@@ -338,19 +421,30 @@ export function checkAgainstRegistry(proposed: SchemaDescriptor[], registry: Sch
     entries.push({ schema: q, status: cmp.status, conflicts: cmp.conflicts, additions: cmp.additions });
   }
 
-  // Duplicate candidates: a proposed schema whose Name+shape matches a registered schema
-  // under a DIFFERENT qualified name/owner → likely the same data modeled twice.
+  // Duplicate candidates: a proposed schema that looks like a registered schema under a
+  // DIFFERENT qualified name/owner (exact look-alike, or high column-name similarity)
+  // → likely the same data modeled twice.
+  const mode = opts.duplicates ?? "warn";
   const duplicateCandidates: SchemaConflict[] = [];
   for (const p of proposed) {
     const pq = qualifiedName(p);
-    const pShape = fieldShapeKey(p);
     for (const [rq, r] of Object.entries(registry)) {
       if (rq === pq) continue;
-      if (r.name === p.name && fieldShapeKey(r) === pShape && r.owner !== p.owner) {
-        duplicateCandidates.push({
-          kind: "duplicate-candidate", schema: pq,
-          detail: `looks identical to ${rq} (owner ${r.owner}) — consider a shared common table instead of duplicating`,
-        });
+      if (!isDuplicateCandidate(p, r)) continue;
+      if (p.adopts === rq) continue; // declared adoption — it USES that table, no duplicate created
+      const overridden = !!p.duplicateOverride?.trim();
+      const conflict: SchemaConflict = {
+        kind: "duplicate-candidate", schema: pq,
+        detail:
+          `high-similarity duplicate of ${rq} (owner ${r.owner}) — adopt it (adopts: "${rq}") ` +
+          `or use a shared common table instead of duplicating` +
+          (overridden ? ` [kept by reviewed override: ${p.duplicateOverride}]` : ""),
+      };
+      duplicateCandidates.push(conflict);
+      if (mode === "block" && !overridden) {
+        const entry = entries.find((e) => e.schema === pq)!;
+        entry.conflicts.push(conflict);
+        entry.status = "conflict";
       }
     }
   }

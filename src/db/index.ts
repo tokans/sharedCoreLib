@@ -26,6 +26,7 @@
 import {
   CONFIDENTIALITY_ORDER, qualifiedName, checkAgainstRegistry, mergeIntoRegistry,
   type SchemaDescriptor, type FieldDescriptor, type SchemaRegistry, type Confidentiality,
+  type RegistryCheckOptions,
 } from "../schema/index.js";
 
 /** Minimal async SQL surface (compatible with `sharedcorelib/sync`'s `SyncDb`). */
@@ -121,17 +122,26 @@ export interface RegisterResult {
   /** SQL statements applied (creates + alters), in order. */
   applied: string[];
   duplicateCandidates: { schema: string; detail: string }[];
+  /** Qualified names of descriptors that ADOPT an existing table (no table created). */
+  adopted: string[];
 }
 
 /**
  * Register a batch of schemas (an app being published/installed) into the shared DB:
- * conflict-check against the current registry (THROWS on conflict), apply append-only
- * CREATE/ALTER migrations, and persist the merged descriptors. Returns the new registry,
- * the SQL applied, and any duplicate candidates to review.
+ * conflict-check against the current registry (THROWS on conflict; pass
+ * `{ duplicates: "block" }` to also hard-block un-adopted/un-overridden duplicate
+ * candidates), apply append-only CREATE/ALTER migrations, and persist the merged
+ * descriptors. A descriptor with `adopts` registers NO table — it declares use of the
+ * existing one (which must exist). Returns the new registry, the SQL applied, the
+ * adopted names, and any duplicate candidates to review.
  */
-export async function registerSchemas(db: SqlDb, descriptors: SchemaDescriptor[]): Promise<RegisterResult> {
+export async function registerSchemas(
+  db: SqlDb,
+  descriptors: SchemaDescriptor[],
+  opts: RegistryCheckOptions = {},
+): Promise<RegisterResult> {
   const registry = await loadRegistry(db);
-  const check = checkAgainstRegistry(descriptors, registry);
+  const check = checkAgainstRegistry(descriptors, registry, opts);
   if (check.hasConflicts) {
     const detail = check.entries
       .filter((e) => e.status === "conflict")
@@ -140,9 +150,17 @@ export async function registerSchemas(db: SqlDb, descriptors: SchemaDescriptor[]
     throw new Error(`schema registration blocked — conflicts: ${detail}`);
   }
 
+  const adopting = descriptors.filter((d) => d.adopts);
+  for (const d of adopting) {
+    if (!registry[d.adopts!] && !descriptors.some((x) => !x.adopts && qualifiedName(x) === d.adopts)) {
+      throw new Error(`schema registration blocked — ${qualifiedName(d)} adopts unknown table ${d.adopts}`);
+    }
+  }
+  const creating = descriptors.filter((d) => !d.adopts);
+
   const applied: string[] = [];
-  const merged = mergeIntoRegistry(registry, descriptors);
-  for (const d of descriptors) {
+  const merged = mergeIntoRegistry(registry, creating);
+  for (const d of creating) {
     const q = qualifiedName(d);
     const existing = registry[q];
     const stmts = existing ? migrationFor(existing, d) : createTableSql(merged[q]!);
@@ -157,6 +175,7 @@ export async function registerSchemas(db: SqlDb, descriptors: SchemaDescriptor[]
     registry: merged,
     applied,
     duplicateCandidates: check.duplicateCandidates.map((d) => ({ schema: d.schema, detail: d.detail })),
+    adopted: adopting.map((d) => qualifiedName(d)),
   };
 }
 

@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import { loadConfig } from "../src/config.mjs";
 import { CHECKS } from "../src/checks/index.mjs";
 import { runAll, summarize } from "../src/runner.mjs";
+import schemaMerge from "../src/checks/schema-merge.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const fixture = (name) => resolve(HERE, "..", "fixtures", name);
@@ -65,6 +66,43 @@ console.log("\n  publisher-ci self-test\n  " + "─".repeat(30));
   const { summary, results } = await runFixture("failing", allFailing);
   assert(summary.failed === false, "skipChecks: skipping all failing checks → PASS");
   assert(results.every((r) => !allFailing.includes(r.id)), "skipChecks: skipped checks absent from results");
+}
+
+// 4. schema-merge duplicate hard-block (K0.2): a cross-owner high-similarity duplicate
+//    FAILS by default; `adopts` and a reviewed `duplicateOverride` are the two exits.
+{
+  const runSchemaMerge = (name, schemaOverrides = {}) => {
+    const { config } = loadConfig(fixture(name));
+    config.schema = { ...config.schema, ...schemaOverrides };
+    return schemaMerge.run({ appDir: fixture(name), config });
+  };
+
+  const blocked = runSchemaMerge("schema-dup-blocked");
+  assert(blocked.status === "fail", "dup-blocked: high-similarity cross-owner duplicate FAILS (block mode is the default)");
+  assert(
+    blocked.findings.some((f) => f.level === "high" && /duplicate: fixtureb#Buddy looks like fixturea#Contact/.test(f.message)),
+    "dup-blocked: the high finding names both tables",
+  );
+
+  const warned = runSchemaMerge("schema-dup-blocked", { duplicates: "warn" });
+  assert(warned.status === "warn", "dup-blocked: schema.duplicates='warn' downgrades the block to a warning");
+
+  const adopts = runSchemaMerge("schema-dup-adopts");
+  assert(adopts.status === "pass", "dup-adopts: adopting the existing table PASSES in block mode");
+  assert(
+    adopts.findings.some((f) => /adopts fixturea#Contact/.test(f.message)),
+    "dup-adopts: the adoption is reported",
+  );
+
+  const override = runSchemaMerge("schema-dup-override");
+  assert(override.status !== "fail", "dup-override: a reviewed duplicateOverride does not fail the check");
+  assert(
+    override.findings.some((f) => /reviewed override/.test(f.message)),
+    "dup-override: the override reason is surfaced for review",
+  );
+
+  const passing = runSchemaMerge("passing");
+  assert(passing.status === "pass", "passing manifest still passes schema-merge in block mode");
 }
 
 console.log("  " + "─".repeat(30));

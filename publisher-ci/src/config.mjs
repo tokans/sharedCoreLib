@@ -24,9 +24,13 @@ export const DEFAULTS = {
   feed: { requireHttps: true },
   // Shared-DB schema registry: the app's semantic schema manifest + an optional
   // snapshot of the already-registered shared schemas to conflict-check against.
+  // `duplicates: "block"` (default) hard-fails a cross-owner high-similarity duplicate
+  // table unless the descriptor `adopts` the existing table or carries a reviewed
+  // `duplicateOverride`; "warn" downgrades it to advisory.
   schema: {
     manifest: "schema.manifest.json",
     registry: "shared-schemas.json",
+    duplicates: "block",
   },
   // Cross-account release pipeline (publish builds + gh-pages to a publisher account).
   release: {

@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   validateDescriptor, compareSchema, checkAgainstRegistry, mergeIntoRegistry,
-  qualifiedName, type SchemaDescriptor, type SchemaRegistry,
+  qualifiedName, columnSimilarity, type SchemaDescriptor, type SchemaRegistry,
 } from "./index.js";
 
 const base = (over: Partial<SchemaDescriptor> = {}): SchemaDescriptor => ({
@@ -108,5 +108,87 @@ describe("checkAgainstRegistry + mergeIntoRegistry", () => {
     const res = checkAgainstRegistry([evolved], registry);
     expect(res.hasConflicts).toBe(false);
     expect(res.entries[0]!.status).toBe("mergeable");
+  });
+});
+
+describe("duplicate hard-block (duplicates: 'block')", () => {
+  // Registered: a contact-like table owned by app A.
+  const contact = (over: Partial<SchemaDescriptor> = {}): SchemaDescriptor => ({
+    namespace: "appa", name: "Contact", schemaType: "Table",
+    confidentiality: "Confidential", owner: "appa",
+    fields: [
+      { name: "id", dataType: "id", keyField: true },
+      { name: "fullName", dataType: "string" },
+      { name: "email", dataType: "string" },
+      { name: "phone", dataType: "string" },
+      { name: "updated_at", dataType: "date" },
+    ],
+    ...over,
+  });
+  const registry: SchemaRegistry = { [qualifiedName(contact())]: contact() };
+  // Proposed by app B: different table/namespace name, near-identical significant columns.
+  const lookalike = (over: Partial<SchemaDescriptor> = {}): SchemaDescriptor => contact({
+    namespace: "appb", name: "Buddy", owner: "appb",
+    fields: [
+      { name: "id", dataType: "id", keyField: true },
+      { name: "fullName", dataType: "string" },
+      { name: "email", dataType: "string" },
+      { name: "phone", dataType: "string" },
+      { name: "created_at", dataType: "date" }, // audit col — ignored by the heuristic
+    ],
+    ...over,
+  });
+
+  it("similarity heuristic: high column overlap (audit/sync cols ignored) → candidate", () => {
+    expect(columnSimilarity(lookalike(), contact())).toBe(1); // {fullname,email,phone} vs same
+    const res = checkAgainstRegistry([lookalike()], registry);
+    expect(res.duplicateCandidates).toHaveLength(1); // detected even with different names
+    expect(res.hasConflicts).toBe(false); // default mode is warn — advisory only
+  });
+
+  it("block mode FAILS an un-adopted, un-overridden duplicate candidate", () => {
+    const res = checkAgainstRegistry([lookalike()], registry, { duplicates: "block" });
+    expect(res.hasConflicts).toBe(true);
+    expect(res.entries[0]!.status).toBe("conflict");
+    expect(res.entries[0]!.conflicts.some((c) => c.kind === "duplicate-candidate")).toBe(true);
+  });
+
+  it("adopts: declaring use of the existing table passes block mode", () => {
+    const adopting = lookalike({ adopts: "appa#Contact" });
+    const res = checkAgainstRegistry([adopting], registry, { duplicates: "block" });
+    expect(res.hasConflicts).toBe(false);
+    expect(res.duplicateCandidates).toHaveLength(0);
+    // adopting a DIFFERENT table does not exempt this candidate
+    const wrong = lookalike({ adopts: "appa#Other" });
+    expect(checkAgainstRegistry([wrong], registry, { duplicates: "block" }).hasConflicts).toBe(true);
+  });
+
+  it("duplicateOverride: a reviewed reason passes block mode but stays reported", () => {
+    const overridden = lookalike({ duplicateOverride: "Reviewed 2026-06: different lifecycle + retention." });
+    const res = checkAgainstRegistry([overridden], registry, { duplicates: "block" });
+    expect(res.hasConflicts).toBe(false);
+    expect(res.duplicateCandidates).toHaveLength(1);
+    expect(res.duplicateCandidates[0]!.detail).toMatch(/reviewed override/);
+  });
+
+  it("no false positive when only audit/sync columns overlap", () => {
+    const sparse = base({
+      namespace: "appb", owner: "appb", name: "Tag",
+      fields: [
+        { name: "id", dataType: "id", keyField: true },
+        { name: "created_at", dataType: "date" },
+        { name: "updated_at", dataType: "date" },
+        { name: "label", dataType: "string" },
+      ],
+    });
+    const res = checkAgainstRegistry([sparse], registry, { duplicates: "block" });
+    expect(res.duplicateCandidates).toHaveLength(0);
+    expect(res.hasConflicts).toBe(false);
+  });
+
+  it("validateDescriptor accepts the new fields and rejects malformed/self adopts", () => {
+    expect(validateDescriptor(lookalike({ adopts: "appa#Contact", duplicateOverride: "reviewed" })).ok).toBe(true);
+    expect(validateDescriptor(lookalike({ adopts: "not-qualified" })).ok).toBe(false);
+    expect(validateDescriptor(contact({ adopts: "appa#Contact" })).ok).toBe(false); // self-adoption
   });
 });

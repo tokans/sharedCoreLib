@@ -1,9 +1,12 @@
 // CONTROL: shared-DB integrity. Every published app declares its data schema with
 // semantic metadata (sharedcorelib/schema). On publish the schema is checked against
 // the already-registered shared schemas: identical/additive merges cleanly, anything
-// incompatible is a CONFLICT that blocks the publish, and same-data-modeled-twice is
-// flagged so it isn't replicated. Self-contained structural mirror of the lib engine
-// (the authoritative engine is `sharedcorelib/schema`). Skips when no manifest.
+// incompatible is a CONFLICT that blocks the publish, and same-data-modeled-twice
+// (a cross-owner look-alike or high column-name similarity) BLOCKS by default —
+// unless the descriptor `adopts` the existing table or carries a reviewed
+// `duplicateOverride` (config `schema.duplicates: "warn"` downgrades to advisory).
+// Self-contained structural mirror of the lib engine (the authoritative engine is
+// `sharedcorelib/schema`). Skips when no manifest.
 import { join } from "node:path";
 import { readJson, fileExists } from "../util.mjs";
 
@@ -11,6 +14,38 @@ const CONF = ["Public", "Internal", "Confidential", "Restricted", "Secret"];
 const rank = (c) => CONF.indexOf(c);
 const qn = (s) => `${s?.namespace}#${s?.name}`;
 const shape = (s) => (s.fields ?? []).map((f) => `${f.name}:${f.dataType}`).sort().join(",");
+
+// ── Duplicate-candidate heuristic (mirrors sharedcorelib/schema) ─────────────
+// Standard audit/sync/identity columns carry no duplication signal.
+const NON_SIGNIFICANT_COLUMNS = new Set([
+  "id", "uuid", "guid",
+  "createdat", "createdon", "createdby", "updatedat", "updatedon", "updatedby",
+  "modifiedat", "modifiedon", "modifiedby", "deletedat", "deleted", "tombstone",
+  "version", "rev", "revision", "dirty",
+  "syncstate", "syncstatus", "lastsyncedat", "syncedat", "deviceid",
+]);
+const SIMILARITY_THRESHOLD = 0.7;
+const normCol = (n) => String(n ?? "").toLowerCase().replace(/[^a-z0-9]/g, "");
+const sigCols = (s) => {
+  const out = new Set();
+  for (const f of s.fields ?? []) {
+    const n = normCol(f.name);
+    if (n && !NON_SIGNIFICANT_COLUMNS.has(n)) out.add(n);
+  }
+  return out;
+};
+// Cross-owner duplicate: exact Name+shape look-alike, OR Jaccard ≥ threshold over ≥ 2
+// significant columns (audit/sync columns ignored).
+function isDuplicateCandidate(p, r) {
+  if (r.owner === p.owner) return false;
+  if (r.name === p.name && shape(r) === shape(p)) return true;
+  const a = sigCols(p), b = sigCols(r);
+  if (!a.size || !b.size) return false;
+  let inter = 0;
+  for (const c of a) if (b.has(c)) inter++;
+  if (inter < 2) return false;
+  return inter / (a.size + b.size - inter) >= SIMILARITY_THRESHOLD;
+}
 
 function validateDescriptor(s, findings) {
   const q = qn(s);
@@ -30,6 +65,12 @@ function validateDescriptor(s, findings) {
       }
       if (!f.purpose) findings.push({ level: "high", message: `${q}.${f.name}: personal data needs a purpose (DPDP)` });
     }
+  }
+  if (s.adopts !== undefined && !/^[^#\s]+#[^#\s]+$/.test(String(s.adopts))) {
+    findings.push({ level: "high", message: `${q}: "adopts" must be a qualified name "namespace#Name"` });
+  }
+  if (s.adopts === q) {
+    findings.push({ level: "high", message: `${q}: a schema cannot adopt itself` });
   }
 }
 
@@ -71,16 +112,30 @@ export default {
     if (fileExists(regPath)) {
       const regArr = readJson(regPath);
       const registry = new Map((Array.isArray(regArr) ? regArr : []).map((s) => [qn(s), s]));
+      // Duplicates are a HARD BLOCK by default; set schema.duplicates: "warn" to downgrade.
+      const dupMode = config.schema?.duplicates ?? "block";
       for (const p of manifest) {
         const existing = registry.get(qn(p));
         if (existing) {
           for (const c of conflictsVs(existing, p)) findings.push({ level: "high", message: `conflict: ${c}` });
         }
-        // Duplicate candidate: same Name + field shape under a different owner.
+        // Duplicate candidate: a cross-owner look-alike (same Name + shape, or high
+        // column-name similarity). Exempt when the descriptor ADOPTS the existing table
+        // or carries a reviewed duplicateOverride.
         for (const [rq, r] of registry) {
-          if (rq !== qn(p) && r.name === p.name && shape(r) === shape(p) && r.owner !== p.owner) {
-            findings.push({ level: "medium", message: `${qn(p)} looks identical to ${rq} (owner ${r.owner}) — use a shared common table, don't duplicate` });
+          if (rq === qn(p) || !isDuplicateCandidate(p, r)) continue;
+          if (p.adopts === rq) {
+            findings.push({ level: "info", message: `${qn(p)} adopts ${rq} — uses the existing table, no duplicate created` });
+            continue;
           }
+          if (typeof p.duplicateOverride === "string" && p.duplicateOverride.trim()) {
+            findings.push({ level: "medium", message: `${qn(p)} duplicates ${rq} (owner ${r.owner}) — kept by reviewed override: ${p.duplicateOverride}` });
+            continue;
+          }
+          findings.push({
+            level: dupMode === "block" ? "high" : "medium",
+            message: `duplicate: ${qn(p)} looks like ${rq} (owner ${r.owner}) — adopt it ("adopts": "${rq}"), use a shared common table, or carry a reviewed "duplicateOverride"`,
+          });
         }
       }
     } else {
