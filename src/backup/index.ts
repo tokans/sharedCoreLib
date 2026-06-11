@@ -13,10 +13,11 @@
  * sentinel values are SKIPPED so a hash can never overwrite a real secret; secrets are
  * re-entered (or restored via the vault/recovery path), by design.
  *
- * DI/pure like every core subsystem: runs against injected {@link SqlDb} handles and
- * the injected SheetJS module (`xlsx` is an optional peer dependency the app provides,
- * exactly like its other heavy deps). No module state, no Tauri imports — the file
- * save/pick stays in the app (or use the SSR-safe `BackupPanel` in ./ui).
+ * DI/pure like every core subsystem: runs against injected {@link SqlDb} handles. The
+ * SheetJS codec defaults to the lib's own bundled `xlsx` dependency (lazy-imported on
+ * first use) and can be overridden via `config.xlsx` (tests inject a fake). No module
+ * state, no Tauri imports — the file save/pick stays in the app (or use the SSR-safe
+ * `BackupPanel` in ../ui).
  */
 import {
   CONFIDENTIALITY_ORDER,
@@ -58,8 +59,8 @@ export interface ExcelBackupConfig {
   /** The exporting app — recorded in meta; import refuses a foreign app's file unless forced. */
   appId: string;
   sources: BackupSource[];
-  /** SheetJS module (`import * as XLSX from "xlsx"` in the app). */
-  xlsx: XlsxModule;
+  /** SheetJS module override; defaults to the lib's own `xlsx` dependency (lazy import). */
+  xlsx?: XlsxModule;
   /** Hash fields whose confidentiality is at/above this level. Default `"Secret"`. */
   hashAtOrAbove?: Confidentiality;
   /** Name pattern hashed in tables with NO descriptor (defense in depth). */
@@ -194,7 +195,9 @@ export function createExcelBackup(cfg: ExcelBackupConfig): ExcelBackup {
   const nameRe = cfg.secretNamePattern ?? DEFAULT_SECRET_NAME_RE;
   const excluded = new Set([...INTERNAL_TABLES, ...(cfg.excludeTables ?? [])]);
   const now = cfg.now ?? (() => new Date());
-  const X = cfg.xlsx;
+  let xlsxMod: XlsxModule | undefined = cfg.xlsx;
+  const resolveXlsx = async (): Promise<XlsxModule> =>
+    (xlsxMod ??= (await import("xlsx")) as unknown as XlsxModule);
 
   const descriptorFor = (src: BackupSource, table: string): SchemaDescriptor | undefined =>
     src.descriptors?.find((d) => tableName(d) === table);
@@ -225,6 +228,7 @@ export function createExcelBackup(cfg: ExcelBackupConfig): ExcelBackup {
     plan: buildPlan,
 
     exportWorkbook: async () => {
+      const X = await resolveXlsx();
       const plans = await buildPlan();
       const wb = X.utils.book_new();
       const tableRows: object[] = [];
@@ -275,6 +279,7 @@ export function createExcelBackup(cfg: ExcelBackupConfig): ExcelBackup {
     },
 
     importWorkbook: async (bytes, opts = {}) => {
+      const X = await resolveXlsx();
       const mode = opts.mode ?? "merge";
       const wb = X.read(bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes), { type: "array" });
 

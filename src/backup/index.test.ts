@@ -230,6 +230,29 @@ describe("importWorkbook", () => {
   });
 });
 
+describe("default SheetJS codec (the lib's own xlsx dependency)", () => {
+  it("round-trips a real .xlsx when no xlsx module is injected", async () => {
+    const src = appSource().src;
+    const engine = createExcelBackup({ appId: "myapp", sources: [src], now: () => new Date("2026-06-11T00:00:00Z") });
+    const { bytes, report } = await engine.exportWorkbook();
+    expect(report.fileNameHint).toBe("myapp-backup-2026-06-11.xlsx");
+    expect(bytes.length).toBeGreaterThan(500); // a real zip container, not our JSON fake
+    expect(bytes[0]).toBe(0x50); // "PK"
+    expect(bytes[1]).toBe(0x4b);
+
+    const fresh = memDb({
+      accounts: { columns: ["id", "name", "balance"], rows: [] },
+      settings: { columns: ["key", "value", "api_token"], rows: [] },
+    });
+    const imported = await createExcelBackup({ appId: "myapp", sources: [{ id: "app", db: fresh.db }] })
+      .importWorkbook(bytes);
+    expect(fresh.tables.get("accounts")?.rows).toHaveLength(2);
+    expect(fresh.tables.get("accounts")?.rows[0]).toMatchObject({ id: "a1", name: "Savings", balance: 1200 });
+    expect(fresh.tables.get("settings")?.rows[0]).not.toHaveProperty("api_token"); // hash skipped
+    expect(imported.tables.find((t) => t.table === "settings")?.skippedHashedColumns).toEqual(["api_token"]);
+  });
+});
+
 describe("suiteSourceForApp", () => {
   it("selects the app's own + common tables with their descriptors", () => {
     const common: SchemaDescriptor = { ...credsDescriptor, namespace: "common", name: "IceCard", dbAlias: "common_ice", owner: "common" };
