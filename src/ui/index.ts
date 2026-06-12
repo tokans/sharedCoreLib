@@ -40,4 +40,5 @@ export { BackupPanel, type BackupPanelProps } from "./backupPanel.js";
 export {
   SuiteShell,
   type SuiteShellProps, type SuiteNavItem, type SuiteAction, type SuiteAccount,
+  type SuiteUserSwitch, type SuiteUserSwitchMember,
 } from "./suiteShell.js";

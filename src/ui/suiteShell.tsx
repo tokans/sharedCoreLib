@@ -64,6 +64,29 @@ export interface SuiteAccount {
   onClick?: () => void;
 }
 
+/** A switchable member shown in the user-switch affordance. */
+export interface SuiteUserSwitchMember {
+  /** Stable member key (e.g. the person_key). */
+  key: string;
+  label: string;
+  /** Single initial / short text for the avatar; falls back to the label's first character. */
+  avatarText?: string;
+}
+
+/**
+ * ADDITIVE (K0.4.3) — the multi-user switch affordance, PAID-GATED BY CONSTRUCTION: the
+ * shell renders it ONLY when this prop is provided AND `members.length > 1`. A free
+ * single-primary-user app passes nothing and the chrome is pixel-identical to today
+ * (invariant 3: free tier stays login-less and visually unchanged). Member management
+ * itself lives in myLifeAssistant — this is just the injected switcher slot.
+ */
+export interface SuiteUserSwitch {
+  /** Key of the active member. */
+  current: string;
+  members: SuiteUserSwitchMember[];
+  onSwitch: (memberKey: string) => void;
+}
+
 export interface SuiteShellProps {
   /** Brand lockup (icon + name) shown in the sidebar header and the mobile top bar. */
   brand: React.ReactNode;
@@ -92,6 +115,8 @@ export interface SuiteShellProps {
   profile?: React.ReactNode;
   /** Optional built-in account button (top-right, tier ≥ 2). */
   account?: SuiteAccount;
+  /** ADDITIVE (K0.4.3): paid multi-user switcher — rendered ONLY when provided AND members.length > 1. */
+  userSwitch?: SuiteUserSwitch;
 
   /** OS opener for the attribution link (Tauri). When absent, the attribution renders as text. */
   onExternal?: (href: string) => void;
@@ -225,7 +250,7 @@ function SidebarScrollArea({ children }: { children: React.ReactNode }): React.R
 export function SuiteShell(props: SuiteShellProps): React.ReactElement {
   const {
     brand, nav, children, centralActions = [], centralLabel = "Menu", centralIcon,
-    actions = [], moreExtra, moreHeader, sidebarTop, profile, account,
+    actions = [], moreExtra, moreHeader, sidebarTop, profile, account, userSwitch,
     onExternal, contentClassName,
   } = props;
 
@@ -266,6 +291,32 @@ export function SuiteShell(props: SuiteShellProps): React.ReactElement {
       >
         {account.avatarText?.trim().charAt(0).toUpperCase() || "·"}
       </button>
+    ) : null;
+
+  // PAID-GATED BY CONSTRUCTION (K0.4.3): nothing renders unless the prop exists AND there is
+  // more than one member — a free single-primary-user app is pixel-identical without it.
+  const userSwitchEl =
+    userSwitch && userSwitch.members.length > 1 ? (
+      <div className="flex items-center gap-1" role="group" aria-label="Switch user">
+        {userSwitch.members.map((m) => (
+          <button
+            key={m.key}
+            type="button"
+            onClick={() => { if (m.key !== userSwitch.current) userSwitch.onSwitch(m.key); }}
+            aria-pressed={m.key === userSwitch.current}
+            aria-label={`Switch to ${m.label}`}
+            title={m.label}
+            className={cn(
+              "flex h-8 w-8 items-center justify-center rounded-full text-xs font-semibold transition-colors",
+              m.key === userSwitch.current
+                ? "bg-primary text-primary-foreground"
+                : "bg-muted text-muted-foreground hover:bg-accent hover:text-accent-foreground",
+            )}
+          >
+            {(m.avatarText ?? m.label).trim().charAt(0).toUpperCase() || "·"}
+          </button>
+        ))}
+      </div>
     ) : null;
 
   return (
@@ -310,6 +361,7 @@ export function SuiteShell(props: SuiteShellProps): React.ReactElement {
         <header className="flex items-center justify-between border-b bg-card px-4 py-3">
           <div className="flex items-center gap-2 font-semibold md:invisible">{brand}</div>
           <div className="flex items-center gap-2">
+            {userSwitchEl}
             {accountButton}
             {profile}
           </div>
