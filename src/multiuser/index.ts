@@ -22,6 +22,14 @@
  */
 import { wrapMasterKey, unwrapMasterKey, generateRecoveryKey } from "../recovery/index.js";
 
+// Member-class feature policy (K0.4.2) — the UI-SOFT gating layer (crypto-hard boundaries
+// stay in the compartment primitives below).
+export {
+  createMemberClassPolicy, createChildSoftPolicy,
+  CHILD_SOFT_DEFAULT_RULES, SENSITIVE_FEATURE_CATEGORIES,
+  type MemberClassPolicy, type MemberClassRule, type SensitiveFeatureCategory,
+} from "./policy.js";
+
 export type UserId = string;
 
 /** A family member: their id + a high-entropy per-user key (their device secret / derived UK). */
