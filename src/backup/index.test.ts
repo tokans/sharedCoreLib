@@ -1,7 +1,8 @@
 import { describe, it, expect } from "vitest";
+import * as CFB from "cfb";
 import {
   createExcelBackup, sheetNameFor, suiteSourceForApp, suiteSourceFull,
-  HASHED_VALUE_RE, BACKUP_FORMAT,
+  isEncryptedWorkbook, HASHED_VALUE_RE, BACKUP_FORMAT,
   type XlsxModule, type BackupSource,
 } from "./index.js";
 import type { SchemaDescriptor } from "../schema/index.js";
@@ -24,9 +25,19 @@ function fakeXlsx(): XlsxModule {
       json_to_sheet: (rows) => ({ __rows: rows as Record<string, unknown>[] }),
       sheet_to_json: <T,>(ws: unknown) => ((ws as FakeSheet).__rows ?? []) as T[],
     },
-    write: (wb) => new TextEncoder().encode(JSON.stringify(wb)).buffer as ArrayBuffer,
+    // The fake "workbook file" is JSON behind a real zip magic ("PK\x03\x04") — the
+    // OOXML encryptor verifies decrypted plaintext LOOKS like a zip (its wrong-password
+    // detector), so the fake must look like one too.
+    write: (wb) => {
+      const json = new TextEncoder().encode(JSON.stringify(wb));
+      const out = new Uint8Array(4 + json.length);
+      out.set([0x50, 0x4b, 0x03, 0x04]);
+      out.set(json, 4);
+      return out.buffer as ArrayBuffer;
+    },
     read: (data) => {
-      const bytes = data instanceof Uint8Array ? data : new Uint8Array(data);
+      let bytes = data instanceof Uint8Array ? data : new Uint8Array(data);
+      if (bytes[0] === 0x50 && bytes[1] === 0x4b && bytes[2] === 0x03 && bytes[3] === 0x04) bytes = bytes.slice(4);
       return JSON.parse(new TextDecoder().decode(bytes)) as FakeWb;
     },
   };
@@ -271,6 +282,112 @@ describe("default SheetJS codec (the lib's own xlsx dependency)", () => {
     expect(fresh.tables.get("accounts")?.rows[0]).toMatchObject({ id: "a1", name: "Savings", balance: 1200 });
     expect(fresh.tables.get("settings")?.rows[0]).not.toHaveProperty("api_token"); // hash skipped
     expect(imported.tables.find((t) => t.table === "settings")?.skippedHashedColumns).toEqual(["api_token"]);
+  });
+
+  it("password-protects a REAL .xlsx end to end (SheetJS write → agile encrypt → decrypt → SheetJS read)", async () => {
+    const engine = createExcelBackup({ appId: "myapp", sources: [appSource().src] });
+    const { bytes, report } = await engine.exportWorkbook({ password: "real-pw" });
+
+    expect(report.encrypted).toBe(true);
+    expect(isEncryptedWorkbook(bytes)).toBe(true);
+    expect(bytes[0]).not.toBe(0x50); // no longer a plain zip
+    // real SheetJS refuses it without the password (Excel would prompt instead)
+    const X = (await import("xlsx")) as unknown as XlsxModule;
+    expect(() => X.read(bytes)).toThrow(/password/i);
+
+    const fresh = memDb({
+      accounts: { columns: ["id", "name", "balance"], rows: [] },
+      settings: { columns: ["key", "value", "api_token"], rows: [] },
+    });
+    const target = createExcelBackup({ appId: "myapp", sources: [{ id: "app", db: fresh.db }] });
+    await expect(target.importWorkbook(bytes)).rejects.toThrow(/password-protected/);
+    await target.importWorkbook(bytes, { password: "real-pw" });
+    expect(fresh.tables.get("accounts")?.rows).toHaveLength(2);
+    expect(fresh.tables.get("accounts")?.rows[0]).toMatchObject({ id: "a1", name: "Savings", balance: 1200 });
+  });
+});
+
+describe("password protection (Excel-native OOXML agile encryption)", () => {
+  const OLE_SIG = [0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1];
+
+  it("isEncryptedWorkbook tells the OLE/CFB container apart from plain bytes", async () => {
+    const { bytes: plain } = await make([appSource().src]).exportWorkbook();
+    expect(isEncryptedWorkbook(plain)).toBe(false);
+    expect(isEncryptedWorkbook(new Uint8Array(OLE_SIG))).toBe(true);
+    expect(isEncryptedWorkbook(new Uint8Array([0xd0, 0xcf]))).toBe(false); // too short
+  });
+
+  it("no password → plaintext output, exactly as before (report says so)", async () => {
+    const { bytes, report } = await make([appSource().src]).exportWorkbook({});
+    expect(report.encrypted).toBe(false);
+    expect(isEncryptedWorkbook(bytes)).toBe(false);
+    expect(readWb(bytes).SheetNames).toContain("_meta"); // still directly readable
+  });
+
+  it("password → a real ECMA-376 agile encryption container, not a readable zip/workbook", async () => {
+    const { bytes, report } = await make([appSource().src]).exportWorkbook({ password: "s3cret!" });
+
+    expect(report.encrypted).toBe(true);
+    // (a) unreadable as a plain workbook…
+    expect(() => readWb(bytes)).toThrow(); // the codec cannot parse it any more
+    expect(bytes[0]).not.toBe(0x50); // not zip "PK" — Excel sees an encrypted file
+    // …because (b) it is an OLE/CFB compound file with the agile-encryption streams:
+    expect(Array.from(bytes.slice(0, 8))).toEqual(OLE_SIG);
+    expect(isEncryptedWorkbook(bytes)).toBe(true);
+    const container = CFB.read(Buffer.from(bytes), { type: "buffer" });
+    const paths = container.FullPaths.map((p) => p.replace(/^Root Entry\//, ""));
+    expect(paths).toContain("EncryptionInfo");
+    expect(paths).toContain("EncryptedPackage");
+    const info = CFB.find(container, "EncryptionInfo")!;
+    // EncryptionInfo header: version major=4, minor=4 ⇒ agile encryption (ECMA-376 Part 4).
+    expect(Array.from(info.content.slice(0, 4))).toEqual([0x04, 0x00, 0x04, 0x00]);
+    const xml = Buffer.from(info.content.slice(8) as Uint8Array).toString("utf8");
+    expect(xml).toContain("http://schemas.microsoft.com/office/2006/encryption");
+  });
+
+  it("round-trips with the password: import decrypts and restores identical data", async () => {
+    const { bytes } = await make([appSource().src, suiteSource().src]).exportWorkbook({ password: "pw-roundtrip" });
+
+    const freshApp = memDb({
+      accounts: { columns: ["id", "name", "balance"], rows: [] },
+      settings: { columns: ["key", "value", "api_token"], rows: [] },
+    });
+    const freshSuite = memDb();
+    const report = await make([
+      { id: "app", db: freshApp.db },
+      { id: "suite", db: freshSuite.db, descriptors: [credsDescriptor] },
+    ]).importWorkbook(bytes, { password: "pw-roundtrip" });
+
+    expect(freshApp.tables.get("accounts")?.rows).toEqual([
+      { id: "a1", name: "Savings", balance: 1200 },
+      { id: "a2", name: "Current", balance: 300 },
+    ]);
+    expect(freshSuite.tables.get("creds")?.rows[0]).toMatchObject({ id: "c1", site: "example.com" });
+    // the secret-hashing contract is unchanged under encryption
+    expect(report.tables.find((t) => t.table === "creds")?.skippedHashedColumns).toEqual(["login_password"]);
+  });
+
+  it("fails cleanly when the password is missing or wrong", async () => {
+    const { bytes } = await make([appSource().src]).exportWorkbook({ password: "right" });
+    const target = make([{ id: "app", db: memDb({ accounts: { columns: ["id", "name", "balance"], rows: [] } }).db }]);
+    await expect(target.importWorkbook(bytes)).rejects.toThrow(/password-protected — enter its password/);
+    await expect(target.importWorkbook(bytes, { password: "wrong" })).rejects.toThrow(/wrong password/);
+    await expect(target.importWorkbook(bytes, { password: "right" })).resolves.toBeTruthy();
+  });
+
+  it("honors an injected ooxmlCrypto module (DI override)", async () => {
+    const calls: string[] = [];
+    const engine = createExcelBackup({
+      appId: "myapp", sources: [appSource().src], xlsx,
+      ooxmlCrypto: {
+        encrypt: (input, opts) => { calls.push(`enc:${opts.password}`); return new Uint8Array([...OLE_SIG, ...input]); },
+        decrypt: (input, opts) => { calls.push(`dec:${opts.password}`); return input.slice(OLE_SIG.length); },
+      },
+    });
+    const { bytes } = await engine.exportWorkbook({ password: "pw" });
+    expect(isEncryptedWorkbook(bytes)).toBe(true);
+    await engine.importWorkbook(bytes, { password: "pw" });
+    expect(calls).toEqual(["enc:pw", "dec:pw"]);
   });
 });
 

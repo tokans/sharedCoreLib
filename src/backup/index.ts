@@ -18,6 +18,17 @@
  * first use) and can be overridden via `config.xlsx` (tests inject a fake). No module
  * state, no Tauri imports — the file save/pick stays in the app (or use the SSR-safe
  * `BackupPanel` in ../ui).
+ *
+ * OPTIONAL password protection (Excel-native): pass `{ password }` to
+ * {@link ExcelBackup.exportWorkbook} and the workbook bytes are wrapped in ECMA-376
+ * agile encryption (an OLE/CFB container with `EncryptionInfo` + `EncryptedPackage`
+ * streams) — Excel itself prompts for the password on open, and the file is no longer
+ * readable as a plain zip. Import auto-detects the container (see
+ * {@link isEncryptedWorkbook}) and requires the same password. The encryptor defaults
+ * to the MIT `officecrypto-tool` dependency, lazy-imported ONLY on the password path
+ * (apps that never set a password load nothing extra) and overridable via
+ * `config.ooxmlCrypto`. There is NO recovery for a forgotten backup password — by
+ * design this stays optional and plaintext remains the default.
  */
 import {
   CONFIDENTIALITY_ORDER,
@@ -40,6 +51,21 @@ export interface XlsxModule {
   };
   write(wb: unknown, opts: { type: "array"; bookType: "xlsx" }): ArrayBuffer;
   read(data: ArrayBuffer | Uint8Array, opts?: { type?: "array" }): { SheetNames: string[]; Sheets: Record<string, unknown> };
+}
+
+// ── OOXML encryption surface (injected; subset of `officecrypto-tool` we use) ─
+
+/**
+ * The OOXML (ECMA-376 agile) encryptor the password path needs. Defaults to the lib's
+ * own `officecrypto-tool` dependency (MIT), lazy-imported only when a password is
+ * actually used; override via {@link ExcelBackupConfig.ooxmlCrypto} (tests, browsers
+ * without a `Buffer` polyfill, …). Both methods take and return whole-file bytes.
+ */
+export interface OoxmlCryptoModule {
+  /** Wrap plaintext `.xlsx` bytes in an encrypted OLE/CFB container. */
+  encrypt(input: Uint8Array, opts: { password: string }): Uint8Array | Promise<Uint8Array>;
+  /** Unwrap an encrypted container back to plaintext `.xlsx` bytes. Rejects on a wrong password. */
+  decrypt(input: Uint8Array, opts: { password: string }): Uint8Array | Promise<Uint8Array>;
 }
 
 // ── Config & result types ────────────────────────────────────────────────────
@@ -67,6 +93,8 @@ export interface ExcelBackupConfig {
   sources: BackupSource[];
   /** SheetJS module override; defaults to the lib's own `xlsx` dependency (lazy import). */
   xlsx?: XlsxModule;
+  /** OOXML encryptor override; defaults to the lib's own `officecrypto-tool` dependency (lazy import on the password path only). */
+  ooxmlCrypto?: OoxmlCryptoModule;
   /** Hash fields whose confidentiality is at/above this level. Default `"Secret"`. */
   hashAtOrAbove?: Confidentiality;
   /** Name pattern hashed in tables with NO descriptor (defense in depth). */
@@ -90,6 +118,8 @@ export interface TablePlan {
 export interface ExportReport {
   fileNameHint: string;
   tables: Array<TablePlan & { rows: number }>;
+  /** True when the workbook bytes are password-protected (ECMA-376 agile encryption). */
+  encrypted: boolean;
 }
 
 export interface ImportReport {
@@ -113,14 +143,23 @@ export interface ImportReport {
 export interface ExcelBackup {
   /** What an export WILL contain (tables, columns, which columns get hashed). */
   plan(): Promise<TablePlan[]>;
-  /** Build the workbook. Returns the raw `.xlsx` bytes + a per-table report. */
-  exportWorkbook(): Promise<{ bytes: Uint8Array; report: ExportReport }>;
+  /**
+   * Build the workbook. Returns the raw `.xlsx` bytes + a per-table report. With
+   * `password` the bytes are Excel-native encrypted (ECMA-376 agile) — Excel asks for
+   * the password on open, and import requires it too. NO recovery if forgotten.
+   */
+  exportWorkbook(opts?: { password?: string }): Promise<{ bytes: Uint8Array; report: ExportReport }>;
   /**
    * Restore a workbook produced by {@link exportWorkbook}. `merge` (default) upserts
    * row-by-row; `replace` clears each matched table first. Hashed-secret sentinel
-   * values are never written. Throws on a foreign `appId` unless `force`.
+   * values are never written. Throws on a foreign `appId` unless `force`. A
+   * password-protected workbook is auto-detected and requires `password` (clear
+   * errors when it is missing or wrong).
    */
-  importWorkbook(bytes: ArrayBuffer | Uint8Array, opts?: { mode?: "merge" | "replace"; force?: boolean }): Promise<ImportReport>;
+  importWorkbook(
+    bytes: ArrayBuffer | Uint8Array,
+    opts?: { mode?: "merge" | "replace"; force?: boolean; password?: string },
+  ): Promise<ImportReport>;
 }
 
 // ── Internals ────────────────────────────────────────────────────────────────
@@ -136,6 +175,48 @@ const SCHEMAS_SHEET = "_schemas";
 const INTERNAL_TABLES = new Set([REGISTRY_TABLE]);
 
 const confRank = (c: Confidentiality): number => CONFIDENTIALITY_ORDER.indexOf(c);
+
+// ── Password protection (ECMA-376 agile encryption) ──────────────────────────
+
+/** OLE/CFB compound-file signature — what an encrypted OOXML container starts with (a plain `.xlsx` starts with zip's `PK`). */
+const CFB_SIGNATURE = [0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1] as const;
+
+/**
+ * Whether `bytes` are a password-protected workbook (an OLE/CFB encryption container)
+ * rather than a plain `.xlsx` zip. Pure signature check — no parsing, no lazy imports —
+ * so UIs can decide to prompt for a password BEFORE calling `importWorkbook`.
+ */
+export function isEncryptedWorkbook(bytes: ArrayBuffer | Uint8Array): boolean {
+  const u8 = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
+  return u8.length >= CFB_SIGNATURE.length && CFB_SIGNATURE.every((b, i) => u8[i] === b);
+}
+
+/**
+ * `officecrypto-tool` needs Node-style Buffers; fail with an actionable message where
+ * none exists (inject `ooxmlCrypto` instead). Always a COPY — the lib works on the
+ * buffer in place, and the caller's bytes must survive e.g. a wrong-password retry.
+ */
+function toBuffer(u8: Uint8Array): Buffer {
+  if (typeof Buffer === "undefined") {
+    throw new Error(
+      "password-protected backups need a Buffer implementation in this runtime — add a bundler Buffer polyfill or inject config.ooxmlCrypto",
+    );
+  }
+  return Buffer.from(u8); // Buffer.from(Uint8Array) copies
+}
+
+/** Adapt the lazy-imported `officecrypto-tool` CJS module (default vs named interop) to {@link OoxmlCryptoModule}. */
+function adaptOfficeCrypto(mod: unknown): OoxmlCryptoModule {
+  const m = mod as { default?: unknown; encrypt?: unknown };
+  const lib = (typeof m.encrypt === "function" ? m : m.default) as {
+    encrypt(input: Buffer, opts: { password: string }): Buffer;
+    decrypt(input: Buffer, opts: { password: string }): Promise<Buffer>;
+  };
+  return {
+    encrypt: (input, opts) => new Uint8Array(lib.encrypt(toBuffer(input), opts)),
+    decrypt: async (input, opts) => new Uint8Array(await lib.decrypt(toBuffer(input), opts)),
+  };
+}
 
 async function sha256Sentinel(value: unknown): Promise<string> {
   const bytes = new TextEncoder().encode(String(value));
@@ -219,6 +300,9 @@ export function createExcelBackup(cfg: ExcelBackupConfig): ExcelBackup {
   let xlsxMod: XlsxModule | undefined = cfg.xlsx;
   const resolveXlsx = async (): Promise<XlsxModule> =>
     (xlsxMod ??= (await import("xlsx")) as unknown as XlsxModule);
+  let ooxmlCrypto: OoxmlCryptoModule | undefined = cfg.ooxmlCrypto;
+  const resolveOoxmlCrypto = async (): Promise<OoxmlCryptoModule> =>
+    (ooxmlCrypto ??= adaptOfficeCrypto(await import("officecrypto-tool")));
 
   const descriptorFor = (src: BackupSource, table: string): SchemaDescriptor | undefined =>
     src.descriptors?.find((d) => tableName(d) === table);
@@ -248,7 +332,7 @@ export function createExcelBackup(cfg: ExcelBackupConfig): ExcelBackup {
   return {
     plan: buildPlan,
 
-    exportWorkbook: async () => {
+    exportWorkbook: async (exportOpts = {}) => {
       const X = await resolveXlsx();
       const plans = await buildPlan();
       const wb = X.utils.book_new();
@@ -294,15 +378,35 @@ export function createExcelBackup(cfg: ExcelBackupConfig): ExcelBackup {
       X.utils.book_append_sheet(wb, X.utils.json_to_sheet(tableRows), TABLES_SHEET);
       if (schemaRows.length) X.utils.book_append_sheet(wb, X.utils.json_to_sheet(schemaRows), SCHEMAS_SHEET);
 
-      const bytes = new Uint8Array(X.write(wb, { type: "array", bookType: "xlsx" }));
+      let bytes: Uint8Array = new Uint8Array(X.write(wb, { type: "array", bookType: "xlsx" }));
+      const password = exportOpts.password;
+      if (password) {
+        // Excel-native protection: wrap the plaintext zip in an ECMA-376 agile
+        // encryption container. Excel prompts for this password on open.
+        bytes = await (await resolveOoxmlCrypto()).encrypt(bytes, { password });
+      }
       const stamp = exportedAt.slice(0, 10);
-      return { bytes, report: { fileNameHint: `${cfg.appId}-backup-${stamp}.xlsx`, tables: reportTables } };
+      return {
+        bytes,
+        report: { fileNameHint: `${cfg.appId}-backup-${stamp}.xlsx`, tables: reportTables, encrypted: Boolean(password) },
+      };
     },
 
     importWorkbook: async (bytes, opts = {}) => {
       const X = await resolveXlsx();
       const mode = opts.mode ?? "merge";
-      const wb = X.read(bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes), { type: "array" });
+      let u8 = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
+      if (isEncryptedWorkbook(u8)) {
+        if (!opts.password) {
+          throw new Error("this backup is password-protected — enter its password to import");
+        }
+        try {
+          u8 = await (await resolveOoxmlCrypto()).decrypt(u8, { password: opts.password });
+        } catch {
+          throw new Error("wrong password for this backup (or the file is corrupted)");
+        }
+      }
+      const wb = X.read(u8, { type: "array" });
 
       const metaWs = wb.Sheets[META_SHEET];
       if (!metaWs) throw new Error("not a sharedcorelib Excel backup (missing _meta sheet)");

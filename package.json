@@ -156,6 +156,7 @@
     "@types/node": "^22.9.0",
     "@types/react": "^18.3.12",
     "@types/react-dom": "^18.3.7",
+    "cfb": "1.2.2",
     "clsx": "^2.1.1",
     "lucide-react": "^0.460.0",
     "react": "^18.3.1",
@@ -170,6 +171,7 @@
     "zustand": "^5.0.1"
   },
   "dependencies": {
+    "officecrypto-tool": "0.0.19",
     "xlsx": "https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz"
   }
 }
