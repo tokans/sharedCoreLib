@@ -24,6 +24,36 @@ import { createTableSql, tableName, type SqlDb } from "../db/index.js";
 import type { SchemaDescriptor } from "../schema/index.js";
 import { slugifyName } from "../ice/index.js";
 
+// ── Member-class vocabulary (K0.4 — multi-user activation) ──────────────────
+// Multi-user SHIPS but is PAID-GATED: the free tier is exactly ONE primary user with no
+// login and an unchanged UI (invariant 3). `member_class` is an ADDITIVE, nullable column
+// on the common person table — absent/null means "the single primary user" (⇒ `owner`),
+// so every existing row keeps today's behavior without a data migration. Member management
+// UI lives in myLifeAssistant; core only provides the vocabulary + mechanisms. Member-class
+// gating is **UI-soft** (a policy layer over FeatureGuard) — private compartments stay
+// crypto-hard via `sharedcorelib/multiuser`.
+
+/** Suite member classes, least → most restricted (owner = the primary user). */
+export const MEMBER_CLASSES = ["owner", "adult", "child_user", "managed_dependent"] as const;
+
+/** A person's class within a multi-user household. */
+export type MemberClass = (typeof MEMBER_CLASSES)[number];
+
+/** Type guard for the member-class vocabulary. */
+export function isMemberClass(v: unknown): v is MemberClass {
+  return typeof v === "string" && (MEMBER_CLASSES as readonly string[]).includes(v);
+}
+
+/**
+ * Effective member class of a person row. Absent/null/unknown ⇒ `owner` — the single
+ * primary user — so a free single-user install (which never writes the column) behaves
+ * exactly as today.
+ */
+export function memberClassOf(row?: { member_class?: string | null } | null): MemberClass {
+  const v = row?.member_class;
+  return isMemberClass(v) ? v : "owner";
+}
+
 // ── Schemas (the frozen entity spine; also published to contracts/) ──────────
 
 /** `person` — thin identity. No domain data; apps attach facets keyed by `person_key`. */
@@ -47,6 +77,8 @@ export const PERSON_SCHEMA: SchemaDescriptor = {
     { name: "photo", dataType: "string", personalData: true, purpose: "Recognize this person in the UI.", description: "encrypted-blob ref to an avatar (optional)" },
     { name: "updated_at", dataType: "date", description: "ISO timestamp of the last edit" },
     { name: "source_app", dataType: "string", description: "app id that last wrote this row" },
+    // ADDITIVE (K0.4): nullable member class; absent/null ⇒ the single primary user (owner).
+    { name: "member_class", dataType: "enum", constraints: { enumValues: [...MEMBER_CLASSES] }, description: "multi-user member class (owner/adult/child_user/managed_dependent); null = single primary user (owner)" },
   ],
 };
 
@@ -158,6 +190,8 @@ export interface Person {
   photo?: string | null;
   updated_at?: string | null;
   source_app?: string | null;
+  /** ADDITIVE (K0.4): multi-user member class; absent/null ⇒ the single primary user (owner). */
+  member_class?: MemberClass | null;
 }
 
 export interface PersonRelationship {
@@ -255,7 +289,7 @@ function upsertInto<T>(
   );
 }
 
-const PERSON_COLS: (keyof Person)[] = ["person_key", "display_name", "relationship_to_self", "contact_phone", "contact_email", "dob", "photo", "updated_at", "source_app"];
+const PERSON_COLS: (keyof Person)[] = ["person_key", "display_name", "relationship_to_self", "contact_phone", "contact_email", "dob", "photo", "updated_at", "source_app", "member_class"];
 const EVENT_COLS: (keyof EventRow)[] = ["id", "date", "title", "person_key", "asset_id", "document_id", "notes", "updated_at", "source_app"];
 const DOC_COLS: (keyof DocumentRow)[] = ["id", "title", "blob_ref", "mime", "person_key", "asset_id", "updated_at", "source_app"];
 const ASSET_COLS: (keyof Asset)[] = ["id", "type", "label", "value", "owner", "proof_document_id", "updated_at", "source_app"];
