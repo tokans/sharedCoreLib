@@ -10,8 +10,9 @@
  *       · *home* — a NavLink to the app's primary destination (label is app-defined, e.g. "Today").
  *       · *center* — adaptive: hidden with 0 `centralActions`, a plain button that runs the action
  *         with exactly 1, and a raised FAB that opens a bottom sheet listing them with 2+.
- *       · *More* — opens a right-side drawer with the rest of the nav + standard actions
- *         (settings / donate / marketplace) + app extras + the attribution.
+ *       · *More* — opens a right-side drawer with the rest of the nav + the suite-standard
+ *         actions the shell renders itself ("More Apps" via `moreAppsTo`, "Report an issue" via
+ *         `onReportIssue`) + the app's own `actions` (donate / emergency / …) + the attribution.
  *
  * Decoupling: the shell renders the styled chrome; the app supplies **data + slots**. Nav items
  * carry a precomputed `state` ("open" | "nudge") so the shell never imports app gating. Routing
@@ -24,7 +25,7 @@
  */
 import * as React from "react";
 import { NavLink, useLocation } from "react-router-dom";
-import { ChevronDown, ChevronUp, MoreHorizontal, Plus, type LucideIcon } from "lucide-react";
+import { Bug, ChevronDown, ChevronUp, LayoutGrid, MoreHorizontal, Plus, type LucideIcon } from "lucide-react";
 import { cn } from "./cn.js";
 import { Sheet, SheetContent, SheetClose } from "./sheet.js";
 import { SupportedByTokans } from "./attribution.js";
@@ -78,7 +79,17 @@ export interface SuiteShellProps {
   centralLabel?: string;
   centralIcon?: LucideIcon;
 
-  /** Standard secondary actions (settings / donate / marketplace …) — shown in More + the sidebar footer. */
+  /**
+   * Route of the app's marketplace page (e.g. "/suite"). When set, the shell renders the
+   * suite-standard **"More Apps"** entry (consistent icon/label across apps) ahead of `actions`.
+   */
+  moreAppsTo?: string;
+  /**
+   * Opens the app's issue-reporting flow (each app's destination differs — a dialog, a prefilled
+   * GitHub URL, …). When set, the shell renders the suite-standard **"Report an issue"** entry.
+   */
+  onReportIssue?: () => void;
+  /** App-specific secondary actions (donate / emergency …) — shown in More + the sidebar footer. */
   actions?: SuiteAction[];
   /** App-specific extra content appended inside the More drawer (below the actions). */
   moreExtra?: React.ReactNode;
@@ -225,9 +236,20 @@ function SidebarScrollArea({ children }: { children: React.ReactNode }): React.R
 export function SuiteShell(props: SuiteShellProps): React.ReactElement {
   const {
     brand, nav, children, centralActions = [], centralLabel = "Menu", centralIcon,
-    actions = [], moreExtra, moreHeader, sidebarTop, profile, account,
+    moreAppsTo, onReportIssue, actions = [], moreExtra, moreHeader, sidebarTop, profile, account,
     onExternal, contentClassName,
   } = props;
+
+  // Suite-standard chrome first (same icon/label/order in every app), then the app's own actions.
+  const allActions: SuiteAction[] = [
+    ...(moreAppsTo
+      ? [{ key: "suite:more-apps", label: "More Apps", icon: LayoutGrid, to: moreAppsTo }]
+      : []),
+    ...(onReportIssue
+      ? [{ key: "suite:report-issue", label: "Report an issue", icon: Bug, onSelect: onReportIssue }]
+      : []),
+    ...actions,
+  ];
 
   const [moreOpen, setMoreOpen] = React.useState(false);
   const [centralOpen, setCentralOpen] = React.useState(false);
@@ -297,7 +319,7 @@ export function SuiteShell(props: SuiteShellProps): React.ReactElement {
           </nav>
         </SidebarScrollArea>
         <div className="flex flex-col gap-1 border-t p-2">
-          {actions.map((a) => (
+          {allActions.map((a) => (
             <ActionRow key={a.key} action={a} />
           ))}
           {attribution}
@@ -402,25 +424,28 @@ export function SuiteShell(props: SuiteShellProps): React.ReactElement {
             <nav className="flex flex-col gap-1">
               {moreItems.map((it) => {
                 const Icon = it.icon;
+                // NOT `SheetClose asChild`: Radix Slot string-joins `className` props, which
+                // destroys NavLink's function form (the class attribute becomes the stringified
+                // function and the row loses all styling). Close the drawer via onClick instead.
                 return (
-                  <SheetClose asChild key={it.to}>
-                    <NavLink
-                      to={it.to}
-                      end={it.end ?? it.to === "/"}
-                      className={navLinkClass(it.state)}
-                      title={it.state === "nudge" ? it.lockHint : undefined}
-                    >
-                      <Icon className="h-4 w-4" />
-                      <span className="flex-1">{it.label}</span>
-                      {it.state === "nudge" && <LockGlyph />}
-                    </NavLink>
-                  </SheetClose>
+                  <NavLink
+                    key={it.to}
+                    to={it.to}
+                    end={it.end ?? it.to === "/"}
+                    className={navLinkClass(it.state)}
+                    title={it.state === "nudge" ? it.lockHint : undefined}
+                    onClick={() => setMoreOpen(false)}
+                  >
+                    <Icon className="h-4 w-4" />
+                    <span className="flex-1">{it.label}</span>
+                    {it.state === "nudge" && <LockGlyph />}
+                  </NavLink>
                 );
               })}
             </nav>
-            {actions.length > 0 && (
+            {allActions.length > 0 && (
               <div className="mt-2 flex flex-col gap-1 border-t pt-2">
-                {actions.map((a) => (
+                {allActions.map((a) => (
                   <SheetClose asChild key={a.key}>
                     <div>
                       <ActionRow action={a} onNavigate={() => setMoreOpen(false)} />

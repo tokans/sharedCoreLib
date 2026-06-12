@@ -240,6 +240,8 @@ CI); the `release-pipeline` check enforces all of this.
 |---|---|---|
 | `src/` → `dist/` | **yes** (the L2 shared runtime) | the 12 subsystems |
 | `publisher-ci/` | **no** (dev-only, separate package) | the security CI/CD toolkit consuming apps use as a `devDependency` |
+| `form-engine-lib/` | **no** (separate package, `@form-engine/react`) | manifest-driven forms, consumed via `file:../sharedCoreLib/form-engine-lib` |
+| `scandoc-lib/` | **no** (separate package, `@scandoc/core`) | the domain-agnostic scanned-document reading engine (OCR-noise normalize / fuzzy match / confidence tiering + a `Recognizer` OCR seam), consumed via `file:../sharedCoreLib/scandoc-lib` by document-reading apps (myHealth, myDocs). Pure TS, no runtime deps, no OCR engine yet — apps supply their own vocabularies/extractors |
 | `THREAT_MODEL.md`, `CONTRACT.md` | no (docs) | the security + consumption contracts |
 | `MIGRATION_PROMPT.md` | no (docs) | a ready-to-run prompt to migrate an existing app (myFinance) onto this core, deleting now-shared duplicates |
 
