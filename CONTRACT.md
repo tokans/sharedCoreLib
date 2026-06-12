@@ -150,9 +150,14 @@ every app across desktop and mobile. It owns the chrome; the app supplies **data
   the shell never imports app gating — compute it from your gating store and omit hidden items.
 - **`centralActions: SuiteAction[]`** — the mobile center button is **adaptive**: 0 actions → no
   center button; 1 → a plain button that runs it; 2+ → a raised FAB that opens a bottom sheet.
-- **`actions: SuiteAction[]`** — standard secondary actions (settings / donate / marketplace …),
-  rendered in both the More drawer and the desktop sidebar footer. `moreExtra` / `moreHeader` /
-  `sidebarTop` inject app-specific content (e.g. a tier badge).
+- **`moreAppsTo?: string`** / **`onReportIssue?: () => void`** — the suite-standard chrome the
+  shell renders itself (consistent icon/label/order in every app): a **"More Apps"** link to the
+  app's marketplace page (e.g. `"/suite"`) and a **"Report an issue"** trigger (each app supplies
+  its own destination — a dialog, a prefilled GitHub URL, …). Rendered ahead of `actions` in both
+  the More drawer and the desktop sidebar footer; omitted when the prop is unset.
+- **`actions: SuiteAction[]`** — the app's own secondary actions (settings / donate / emergency …),
+  rendered after the standard chrome in both the More drawer and the desktop sidebar footer.
+  `moreExtra` / `moreHeader` / `sidebarTop` inject app-specific content (e.g. a tier badge).
 - **`profile`** — the injected top-right slot (app-owned; e.g. myHealth's family-profile button +
   drawer). Keeps the shell free of login/multi-user semantics — **free apps stay login-less**.
 - **`account?: { tier, … }`** — the OPTIONAL built-in account button, rendered **only at tier ≥ 2**.
