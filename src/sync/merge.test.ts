@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
-import { createMergeEngine, syncableTables, applyBundle, type SyncDb, type SyncBundle } from "./index.js";
+import { createMergeEngine, syncableTables, applyBundle, buildBundle, type SyncDb, type SyncBundle } from "./index.js";
 import type { SchemaDescriptor, SchemaRegistry } from "../schema/index.js";
+import { privateCompartment } from "../multiuser/index.js";
 
 const table = (namespace: string, name: string, owner: string): SchemaDescriptor => ({
   namespace, name, owner, schemaType: "Table", confidentiality: "Internal",
@@ -78,5 +79,75 @@ describe("per-app sync scoping", () => {
     // newer remote → wins
     await applyBundle(db, scope, { "myfinance#Account": [{ id: "a1", v: "new", updated_at: "2026-06-20", device_id: "devB" }] }, "devA");
     expect(db.dump("myfinance_Account")[0]!.v).toBe("new");
+  });
+});
+
+describe("compartment-aware sync (K0.4.4)", () => {
+  const ins = (db: SyncDb, id: string, compartment: string | null) =>
+    db.execute(
+      `INSERT OR REPLACE INTO "myfinance_Account" ("id", "v", "updated_at", "device_id", "compartment") VALUES (?, ?, ?, ?, ?)`,
+      [id, "v-" + id, "2026-06-10", "devA", compartment],
+    );
+
+  async function seeded() {
+    const db = memDb();
+    await ins(db, "untagged", null);
+    await ins(db, "shared", "shared");
+    await ins(db, "al", privateCompartment("alice"));
+    await ins(db, "bo", privateCompartment("bob"));
+    return db;
+  }
+
+  it("outgoing for a recipient: shared + untagged + their own private rows only", async () => {
+    const db = await seeded();
+    const engine = createMergeEngine({ db, registry, appId: "myfinance", localDeviceId: "devA" });
+    const forAlice = await engine.outgoing("alice");
+    expect(forAlice["myfinance#Account"]!.map((r) => r.id).sort()).toEqual(["al", "shared", "untagged"]);
+    const forBob = await engine.outgoing("bob");
+    expect(forBob["myfinance#Account"]!.map((r) => r.id).sort()).toEqual(["bo", "shared", "untagged"]);
+    // a non-member recipient gets only shared/untagged rows
+    const forCarol = await engine.outgoing("carol");
+    expect(forCarol["myfinance#Account"]!.map((r) => r.id).sort()).toEqual(["shared", "untagged"]);
+  });
+
+  it("REGRESSION: no recipient ⇒ every row is emitted, exactly as before", async () => {
+    const db = await seeded();
+    const engine = createMergeEngine({ db, registry, appId: "myfinance", localDeviceId: "devA" });
+    const all = await engine.outgoing();
+    expect(all["myfinance#Account"]).toHaveLength(4);
+    // and buildBundle without compartment options is identical
+    const scope = syncableTables(registry, "myfinance");
+    expect(await buildBundle(db, scope)).toEqual(all);
+  });
+
+  it("ingest with localUserId skips another member's private rows (receive-side guard)", async () => {
+    const db = memDb();
+    const engine = createMergeEngine({ db, registry, appId: "myfinance", localDeviceId: "devA", localUserId: "alice" });
+    const remote: SyncBundle = {
+      "myfinance#Account": [
+        { id: "s1", v: "shared", updated_at: "2026-06-10", device_id: "devB", compartment: "shared" },
+        { id: "u1", v: "untagged", updated_at: "2026-06-10", device_id: "devB" },
+        { id: "a1", v: "alice-private", updated_at: "2026-06-10", device_id: "devB", compartment: "private:alice" },
+        { id: "b1", v: "bob-private", updated_at: "2026-06-10", device_id: "devB", compartment: "private:bob" },
+      ],
+    };
+    const res = await engine.ingest(remote);
+    expect(db.dump("myfinance_Account").map((r) => r.id).sort()).toEqual(["a1", "s1", "u1"]);
+    expect(res.applied).toBe(3);
+    expect(res.skipped).toBe(1); // bob's private row never written
+  });
+
+  it("REGRESSION: ingest without localUserId applies every row, exactly as before", async () => {
+    const db = memDb();
+    const engine = createMergeEngine({ db, registry, appId: "myfinance", localDeviceId: "devA" });
+    const remote: SyncBundle = {
+      "myfinance#Account": [
+        { id: "b1", v: "bob-private", updated_at: "2026-06-10", device_id: "devB", compartment: "private:bob" },
+        { id: "u1", v: "untagged", updated_at: "2026-06-10", device_id: "devB" },
+      ],
+    };
+    const res = await engine.ingest(remote);
+    expect(res.applied).toBe(2);
+    expect(db.dump("myfinance_Account")).toHaveLength(2);
   });
 });

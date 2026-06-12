@@ -55,6 +55,7 @@ export function isNewer(
 // {@link SyncTransport}). This lets apps delete their local `src/sync/merge.ts`.
 import { tableName } from "../db/index.js";
 import { qualifiedName, type SchemaDescriptor, type SchemaRegistry } from "../schema/index.js";
+import { canAccessCompartment, compartmentOf, rowsForRecipient } from "../multiuser/index.js";
 
 /** A per-table change-set: the rows a peer is offering for that table. */
 export type SyncBundle = Record<string, Record<string, unknown>[]>;
@@ -84,11 +85,37 @@ export function syncableTables(registry: SchemaRegistry, appId: string, opts: Sc
 
 const pk = (s: SchemaDescriptor): string => (s.fields.find((f) => f.keyField)?.dbAlias ?? s.fields.find((f) => f.keyField)?.name ?? "id");
 
-/** Read every row of each scoped table into a bundle keyed by qualified name. */
-export async function buildBundle(db: SyncDb, tables: SchemaDescriptor[]): Promise<SyncBundle> {
+// ── Compartment-aware scoping (K0.4.4 — multi-user activation) ───────────────
+// Rows may carry a `compartment` tag (`sharedcorelib/multiuser`): "shared" or
+// "private:<userId>". The merge engine honors the tag on BOTH legs:
+//   - send side: a private row is only emitted to its owner (`rowsForRecipient`);
+//   - receive side: an incoming row in a compartment the local user can't access is skipped.
+// UNTAGGED rows are "shared" and behave exactly as before; omitting the user ids disables
+// the filtering entirely (single-user sync is byte-for-byte today's behavior).
+
+/** ADDITIVE (K0.4.4): per-leg compartment scoping options. */
+export interface CompartmentOptions {
+  /** The member the OUTGOING bundle is for — their shared + own-private rows only. */
+  recipientUserId?: string;
+  /** The local member — incoming rows in compartments they can't access are skipped. */
+  localUserId?: string;
+}
+
+/**
+ * Read every row of each scoped table into a bundle keyed by qualified name. With
+ * `compartments.recipientUserId` set, rows are filtered to those the recipient may
+ * receive (shared + their own private compartment) — send-side enforcement.
+ */
+export async function buildBundle(
+  db: SyncDb, tables: SchemaDescriptor[], compartments?: CompartmentOptions,
+): Promise<SyncBundle> {
+  const recipient = compartments?.recipientUserId;
   const bundle: SyncBundle = {};
   for (const s of tables) {
-    bundle[qualifiedName(s)] = await db.select(`SELECT * FROM "${tableName(s).replace(/[^A-Za-z0-9_]/g, "_")}"`);
+    const rows = await db.select<Record<string, unknown> & { compartment?: string | null }>(
+      `SELECT * FROM "${tableName(s).replace(/[^A-Za-z0-9_]/g, "_")}"`,
+    );
+    bundle[qualifiedName(s)] = recipient === undefined ? rows : rowsForRecipient(rows, recipient);
   }
   return bundle;
 }
@@ -102,8 +129,10 @@ export interface ApplyResult { applied: number; skipped: number }
  */
 export async function applyBundle(
   db: SyncDb, scope: SchemaDescriptor[], remote: SyncBundle, localDeviceId: string,
+  compartments?: CompartmentOptions,
 ): Promise<ApplyResult> {
   const byName = new Map(scope.map((s) => [qualifiedName(s), s]));
+  const localUser = compartments?.localUserId;
   let applied = 0, skipped = 0;
   for (const [q, rows] of Object.entries(remote)) {
     const s = byName.get(q);
@@ -111,6 +140,11 @@ export async function applyBundle(
     const table = `"${tableName(s).replace(/[^A-Za-z0-9_]/g, "_")}"`;
     const key = pk(s);
     for (const row of rows) {
+      // Receive-side compartment guard (K0.4.4): never write another member's private row.
+      if (localUser !== undefined && !canAccessCompartment(compartmentOf(row as { compartment?: string | null }), localUser)) {
+        skipped++;
+        continue;
+      }
       const localRows = await db.select<Record<string, unknown>>(`SELECT * FROM ${table} WHERE "${key}" = ?`, [row[key]]);
       const local = localRows[0];
       if (local && !isNewer(row.updated_at, local.updated_at, String(row.device_id ?? ""), localDeviceId)) { skipped++; continue; }
@@ -131,14 +165,24 @@ export interface MergeEngineConfig {
   appId: string;
   localDeviceId: string;
   scope?: ScopeOptions;
+  /**
+   * ADDITIVE (K0.4.4): the LOCAL member's user id. When set, ingest skips incoming rows in
+   * compartments this member can't access (another member's `private:<userId>` rows).
+   * Omit in a single-user app — behavior is exactly as before.
+   */
+  localUserId?: string;
 }
 
 export interface MergeEngine {
   /** The tables this engine will sync (owned + common). */
   scope(): SchemaDescriptor[];
-  /** Build this device's outgoing bundle. */
-  outgoing(): Promise<SyncBundle>;
-  /** Merge a peer's bundle (out-of-scope tables ignored). */
+  /**
+   * Build this device's outgoing bundle. ADDITIVE (K0.4.4): pass the recipient member's
+   * user id to emit only the rows that member may receive (shared + their own private
+   * compartment). Omit it (single-user) and every row is emitted, exactly as before.
+   */
+  outgoing(recipientUserId?: string): Promise<SyncBundle>;
+  /** Merge a peer's bundle (out-of-scope tables ignored; foreign private compartments skipped). */
   ingest(remote: SyncBundle): Promise<ApplyResult>;
 }
 
@@ -147,7 +191,7 @@ export function createMergeEngine(cfg: MergeEngineConfig): MergeEngine {
   const scope = syncableTables(cfg.registry, cfg.appId, cfg.scope);
   return {
     scope: () => scope,
-    outgoing: () => buildBundle(cfg.db, scope),
-    ingest: (remote) => applyBundle(cfg.db, scope, remote, cfg.localDeviceId),
+    outgoing: (recipientUserId) => buildBundle(cfg.db, scope, { recipientUserId }),
+    ingest: (remote) => applyBundle(cfg.db, scope, remote, cfg.localDeviceId, { localUserId: cfg.localUserId }),
   };
 }
