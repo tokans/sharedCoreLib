@@ -61,21 +61,21 @@ the single bundled copy); the lib also lists them as devDeps so it type-checks i
 | `sharedcorelib/masters` | merge: `mergeMasterOptions`, `pickMode`, `DROPDOWN_MAX`, `MasterOption`; verify: `verifyManifestSignature`, `sha256Hex`, `decryptTransport`, `meetsMinVersion`, `verifyAndDecryptManifest`, `genericManifestSchema`; OTA: `createOtaUpdater(config)`; **common masters + namespacing**: `getCommonBaked`, `COMMON_MASTER_IDS`, `isCommonMaster`, `COMMON_SCOPE`, `qualifyMasterKey`, `parseMasterKey` (see §5.7) | release `baseUrl`, signing `pubkeyHex`, `transportKeyB64`, its OWN **app-specific** master registry + zod schemas (reusing the common sets), `getLastRevision`/`applyEntry` adapters, and (for L2) `cacheDir` + `cacheNamespace` |
 | `sharedcorelib/tiers` | `resolveTier`, `tierReached`, `nextEarnedTiers`, `TierDef`; **standard top tiers**: `standardTopTiers`, `hasPatronAccess`, `becomePatronVisible`, `PatronPartnerCtx`, `PATRON_TIER_KEY`/`PARTNER_TIER_KEY` | the app's **earned** ladder (each `{key,label,criteria,reached,grant?}`) + display fields; spread `standardTopTiers()` on the end (Patron/Partner are shared). Patron/Partner status comes from `/grant` |
 | `sharedcorelib/grant` | `verifyGrant`, `createGrantReceiver`, `GrantEnvelope`/`GrantKeys`/`GrantReceiver` | grant signing keys (**separate** from masters keys), `parsePayload`, and the receive-only channels `readDroppedFile` / `fetchByToken` (file-drop / anonymous backend token). Receive-only — never uploads |
-| `sharedcorelib/schema` | `SchemaDescriptor`/`FieldDescriptor`/`RelationshipDescriptor` + `validateDescriptor`, `compareSchema`, `checkAgainstRegistry`, `mergeIntoRegistry`, `qualifiedName`, `Confidentiality`/`CONFIDENTIALITY_ORDER` | each table's semantic descriptor (fields/relationships/constraints/purpose/confidentiality/`personalData`); the registry snapshot to check against (see §8) |
-| `sharedcorelib/db` | DDL: `createTableSql`/`addColumnSql`/`migrationFor`/`sqliteType`/`tableName`; registry: `ensureRegistry`/`loadRegistry`/`registerSchemas` (append-only migrate + conflict-block); governance: `createSharedDb({appId,grantedLevel,registry})` → `read`/`write`/`list`, `visibleColumns`/`schemaVisibleAt`/`canAppWrite`; `SqlDb` | an injected `SqlDb` (the Tauri SQL plugin), the calling `appId` + granted `Confidentiality`. Runs the ONE shared suite DB (see §8) |
-| `sharedcorelib/gating` | `FeatureGate`, `isFeatureUnlocked`, `createGatingStore(config)`, `GatingState`; **person-linked**: `revealKey(user,app,gate?)`, `PRIMARY_USER_KEY`; **nudge**: `pickNudge`/`Nudge`/`NudgeContext`; **`FeatureGuard`** (SSR-safe, promoted into core) | flag shape, gate defs + copy, `computeFlags()` (queries app DB), `unlockedAll`, optional `override` (wire to `hasPatronAccess`). `FeatureGuard` takes `renderLocked`/`renderLoading` for app-specific UI. |
-| `sharedcorelib/backup` | Whole-store **Excel backup/restore** every app exposes from Settings: `createExcelBackup(config)` → `plan()`/`exportWorkbook()`/`importWorkbook()` — ONE `.xlsx`, one sheet per table + `_meta`/`_tables`/`_schemas` sheets. **`suiteSourceFull(db, registry)` is the standard suite source**: the ENTIRE shared `suite.db` (every installed app's tables, auto-discovered; the full registry drives hashing) — any app's export is the suite-wide "everything the system has" dump, and its suite sheets **restore from any app's workbook** (sources marked `shared` accept foreign-app files; per-app sources still refuse them unless `force`, reported in `foreignAppSheets`). `suiteSourceForApp(db, registry, appId)` remains for an owner-scoped slice. **Secrets never export in the clear:** fields at/above the `hashAtOrAbove` confidentiality floor (default `Secret`), or matching the secret-name pattern in descriptorless tables, become one-way `sha256:<hex>` fingerprints and are **skipped on import** (a fingerprint can never overwrite a real secret). Import is `merge` (upsert) or `replace`; foreign-app files refused unless `force`; absent descriptor-backed tables are recreated from the embedded `_schemas`. `BACKUP_FORMAT`/`BACKUP_FORMAT_VERSION`/`HASHED_VALUE_RE`, `XlsxModule` | its `SqlDb` handles (own app DB + the suite slice via `suiteSourceForApp`) and its `appId`. SheetJS comes with the lib (`xlsx` is a **regular dependency** of sharedcorelib — pinned SheetJS-CDN 0.20.3 tarball, lazy-imported on first use; consuming apps get it transitively and may override via `config.xlsx`, which tests use to inject a fake). Settings UI: drop in **`BackupPanel`** from `sharedcorelib/ui` (pass a Tauri `save` handler; browser download is the preview fallback) |
+| `sharedcorelib/schema` | `SchemaDescriptor`/`FieldDescriptor`/`RelationshipDescriptor` + `validateDescriptor`, `compareSchema`, `checkAgainstRegistry`, `mergeIntoRegistry`, `qualifiedName`, `Confidentiality`/`CONFIDENTIALITY_ORDER`; **duplicate policy**: descriptor `adopts: "ns#Name"` (use an existing table, create none) + `duplicateOverride` (reviewed keep-anyway note), `checkAgainstRegistry(proposed, registry, { duplicates: "block" \| "warn" })` (lib default `"warn"` for back-compat; **publisher-ci blocks by default**, see §8.3), `columnSimilarity`, `DUPLICATE_SIMILARITY_THRESHOLD` (0.7 Jaccard) | each table's semantic descriptor (fields/relationships/constraints/purpose/confidentiality/`personalData`); the registry snapshot to check against (see §8) |
+| `sharedcorelib/db` | DDL: `createTableSql`/`addColumnSql`/`migrationFor`/`sqliteType`/`tableName`; registry: `ensureRegistry`/`loadRegistry`/`registerSchemas` (append-only migrate + conflict-block; `RegisterResult.adopted` lists adopting descriptors, which create no table); **aux SQL migrations** (replaces per-app Tauri-plugin migrations, see §8.6): `registerAuxMigrations(db, appId, steps)` + `AuxMigrationStep`/`AuxMigrationResult`/`AUX_MIGRATIONS_TABLE`/`referencedTables`; governance: `createSharedDb({appId,grantedLevel,registry})` → `read`/`write`/`list`, `visibleColumns`/`schemaVisibleAt`/`canAppWrite`; `SqlDb` | an injected `SqlDb` (the Tauri SQL plugin), the calling `appId` + granted `Confidentiality`. Runs the ONE shared suite DB (see §8) |
+| `sharedcorelib/gating` | `FeatureGate`, `isFeatureUnlocked`, `createGatingStore(config)`, `GatingState`; **person-linked**: `revealKey(user,app,gate?)`, `PRIMARY_USER_KEY`; **nudge**: `pickNudge`/`Nudge`/`NudgeContext`; **`FeatureGuard`** (SSR-safe, promoted into core) | flag shape, gate defs + copy, `computeFlags()` (queries app DB), `unlockedAll`, optional `override` (wire to `hasPatronAccess`). `FeatureGuard` takes `renderLocked`/`renderLoading` for app-specific UI, plus the ADDITIVE `memberAccess?: FeatureGuardMemberAccess` prop (`{policy, memberClass?, categories?, renderDenied?}`) — when supplied, the `(member_class, feature)` policy from `/multiuser` is enforced first (UI-soft only); omitted ⇒ behavior exactly as before (free single-user unchanged). |
+| `sharedcorelib/backup` | Whole-store **Excel backup/restore** every app exposes from Settings: `createExcelBackup(config)` → `plan()`/`exportWorkbook()`/`importWorkbook()` — ONE `.xlsx`, one sheet per table + `_meta`/`_tables`/`_schemas` sheets. **`suiteSourceFull(db, registry)` is the standard suite source**: the ENTIRE shared `suite.db` (every installed app's tables, auto-discovered; the full registry drives hashing) — any app's export is the suite-wide "everything the system has" dump, and its suite sheets **restore from any app's workbook** (sources marked `shared` accept foreign-app files; per-app sources still refuse them unless `force`, reported in `foreignAppSheets`). `suiteSourceForApp(db, registry, appId)` remains for an owner-scoped slice. **Secrets never export in the clear:** fields at/above the `hashAtOrAbove` confidentiality floor (default `Secret`), or matching the secret-name pattern in descriptorless tables, become one-way `sha256:<hex>` fingerprints and are **skipped on import** (a fingerprint can never overwrite a real secret). Import is `merge` (upsert) or `replace`; foreign-app files refused unless `force`; absent descriptor-backed tables are recreated from the embedded `_schemas`. **Optional password protection (Excel-native):** `exportWorkbook({ password? })` wraps the workbook in **ECMA-376 agile encryption** (Excel itself prompts on open); `importWorkbook({ password? })` auto-detects an encrypted CFB container; `isEncryptedWorkbook(bytes)` lets UIs prompt before importing; `ExportReport.encrypted` reports the state. The encryptor is the pinned MIT **`officecrypto-tool@0.0.19`** regular dependency (the second approved dep exception after `xlsx`), **lazy-loaded only on the password path** and overridable via `config.ooxmlCrypto` (DI). Plaintext stays the default; the password is **unrecoverable by design** (no escrow — invariant 2); secret-field sha256 fingerprinting runs BEFORE encryption, unchanged. `BACKUP_FORMAT`/`BACKUP_FORMAT_VERSION`/`HASHED_VALUE_RE`, `XlsxModule` | its `SqlDb` handles (own app DB + the suite slice via `suiteSourceForApp`) and its `appId`. SheetJS comes with the lib (`xlsx` is a **regular dependency** of sharedcorelib — pinned SheetJS-CDN 0.20.3 tarball, lazy-imported on first use; consuming apps get it transitively and may override via `config.xlsx`, which tests use to inject a fake). Settings UI: drop in **`BackupPanel`** from `sharedcorelib/ui` (pass a Tauri `save` handler; browser download is the preview fallback) |
 | `sharedcorelib/reminders` | pure scheduling (`daysBetween`, `addDaysISO`, `addYearsISO`, `bucketFor`, `shouldNotify`, `nextAnnual`, `fyReviewDueDate`, `byDueDate`, `dueLabel`, `isSnoozed`, `DUE_SOON_DAYS`, `ReminderLike`); notify (`ensureNotificationPermission`, `sendNotification`); `runReminderSweep(adapters)` | the derived-reminder generators + DB adapters (`syncDerived`, `listOpen`, `markFired`) + `today` |
 | `sharedcorelib/report` | `printHtmlAsPdf`, `escapeHtml` | the report HTML templates |
 | `sharedcorelib/ice` | `mentionsContact`, `telHref`, `mailtoHref`, `hasActionableContact`, `CONTACT_PHRASES` | ICE-card fields + disclaimer copy |
-| `sharedcorelib/sync` | `isNewer` (LWW rule), `SyncDb`; **per-app-scoped merge engine** (promoted from apps): `createMergeEngine`/`syncableTables`/`buildBundle`/`applyBundle`/`SyncTransport` — syncs only owned + `common` tables (receive-side scoped). Apps delete their local `merge.ts` | the schema `registry` + `appId` + `localDeviceId`; the Rust LAN transport as the injected `SyncTransport`. Envelope crypto = `sharedcorelib/crypto`. |
-| `sharedcorelib/ui` | **Purge-safe:** `cn`, `ClassValue`; **publisher attribution** (`SupportedByTokans`, `tokansAttribution`, `SUPPORTED_BY_LABEL`, `TOKANS_URL`, `TOKANS_LOGO_DATA_URI`); **`AppHarness`** unstyled responsive primitive (slots + `pickOrientation`/`useViewportWidth`/`themeStyle`/`DEFAULT_THEME`/`SuiteThemeToken`/`chromeActions`). **Styled kit (needs §4.2 preset + `theme.css` + content glob):** **`SuiteShell`** (`SuiteNavItem`/`SuiteAction`/`SuiteAccount` — sidebar + mobile top bar + 3-button bar + adaptive central sheet + More drawer + `profile` slot + tier-gated `account`) and **`Sheet`**/`SheetContent`/`SheetClose` drawer. Also: **`sharedcorelib/tailwind-preset`** (Tailwind preset) + **`sharedcorelib/ui/theme.css`** (default token values). | for `SuiteShell`: `brand`, `nav` (precomputed `state`), `centralActions`, `actions`, `profile` slot, optional `account` (tier ≥ 2), `onExternal`. Must render inside the app's `react-router-dom` Router. **primitive** kit (`FiniteSetInput`, shadcn primitives) still deferred — see §4 |
-| `sharedcorelib/entities` | `createEntitiesStore`, `ENTITY_SCHEMAS`, `personKeyFor`; the `person`/`event`/`document`/`asset` spine (all `owner:"common"`) — identity-only `person` + per-app facets, dormant `PersonRelationship` edges, **explicit-reference identity** (`pickOrCreatePerson`, no auto-merge), `suggestDuplicates`, `assetsForOwner`. **Contract:** `contracts/entities.md` | an injected `SqlDb` + `appId`. Read/write the spine via this — never re-model it (invariant 6) |
+| `sharedcorelib/sync` | `isNewer` (LWW rule), `SyncDb`; **per-app-scoped merge engine** (promoted from apps): `createMergeEngine`/`syncableTables`/`buildBundle`/`applyBundle`/`SyncTransport` — syncs only owned + `common` tables (receive-side scoped). Apps delete their local `merge.ts`. **Compartment-aware (additive):** `CompartmentOptions` (`{recipientUserId?, localUserId?}`) on `buildBundle`/`applyBundle`, `MergeEngine.outgoing(recipientUserId?)` + `MergeEngineConfig.localUserId?` — rows tagged `private:<userId>` reach ONLY their owner (send-side filter + receive-side guard); untagged rows / omitted options = today's behavior, byte-identical | the schema `registry` + `appId` + `localDeviceId` (+ optional `localUserId` for multi-user); the Rust LAN transport as the injected `SyncTransport`. Envelope crypto = `sharedcorelib/crypto`. |
+| `sharedcorelib/ui` | **Purge-safe:** `cn`, `ClassValue`; **publisher attribution** (`SupportedByTokans`, `tokansAttribution`, `SUPPORTED_BY_LABEL`, `TOKANS_URL`, `TOKANS_LOGO_DATA_URI`); **`AppHarness`** unstyled responsive primitive (slots + `pickOrientation`/`useViewportWidth`/`themeStyle`/`DEFAULT_THEME`/`SuiteThemeToken`/`chromeActions`). **Styled kit (needs §4.2 preset + `theme.css` + content glob):** **`SuiteShell`** (`SuiteNavItem`/`SuiteAction`/`SuiteAccount` — sidebar + mobile top bar + 3-button bar + adaptive central sheet + More drawer + `profile` slot + tier-gated `account` + ADDITIVE `userSwitch?: SuiteUserSwitch` — the paid multi-user switcher, **paid-gated by construction**: renders NOTHING unless the prop is provided AND `members.length > 1`, so free single-user chrome stays byte-identical (invariant 3); member management itself is myLifeAssistant-only) and **`Sheet`**/`SheetContent`/`SheetClose` drawer. Also: **`sharedcorelib/tailwind-preset`** (Tailwind preset) + **`sharedcorelib/ui/theme.css`** (default token values). | for `SuiteShell`: `brand`, `nav` (precomputed `state`), `centralActions`, `actions`, `profile` slot, optional `account` (tier ≥ 2), optional `userSwitch` (`{current, members, onSwitch}`, paid apps only), `onExternal`. Must render inside the app's `react-router-dom` Router. **primitive** kit (`FiniteSetInput`, shadcn primitives) still deferred — see §4 |
+| `sharedcorelib/entities` | `createEntitiesStore`, `ENTITY_SCHEMAS`, `personKeyFor`; the `person`/`event`/`document`/`asset` spine (all `owner:"common"`) — identity-only `person` + per-app facets, dormant `PersonRelationship` edges, **explicit-reference identity** (`pickOrCreatePerson`, no auto-merge), `suggestDuplicates`, `assetsForOwner`; **member class (additive)**: nullable `member_class` on `common#Person` ∈ `{owner, adult, child_user, managed_dependent}` (absent/null/unknown ⇒ `owner`) + `MEMBER_CLASSES`/`MemberClass`/`isMemberClass`/`memberClassOf`. **Contract:** `contracts/entities.md` (v1.1) | an injected `SqlDb` + `appId`. Read/write the spine via this — never re-model it (invariant 6) |
 | `sharedcorelib/recovery` | `generateRecoveryKey`, `wrapMasterKey`/`unwrapMasterKey`, `createRecovery` (local + zero-knowledge escrow + re-key), Shamir `splitSecret`/`combineShares`/`splitRecoveryKey`; `RecoveryBlobStore`/`EscrowClient`/`WrappedKey` | a local `RecoveryBlobStore`; optional registered-tier `EscrowClient`. RK is user-held, never vendor-held |
 | `sharedcorelib/breakglass` | `BreakGlassContributor` (frozen contributor interface), `buildSnapshot` (tier redaction), `generateRecipientPassphrase`, `wrapSlice`/`openSlice` (zero-knowledge slice + license-free reader), `isReleaseEligible`, `BREAKGLASS_SCHEMAS`/`createBreakGlassLedger`, `BreakGlassEscrow`. **Contract:** `contracts/breakglass.md` | each app's `BreakGlassContributor` (does its own redaction); an injected `SqlDb`; a `BreakGlassEscrow` (release gated by `account` 2FA) |
 | `sharedcorelib/account` | `createAccountClient` → register/login, recovery + break-glass escrow, heartbeat (+cancel), promise-card redeem, `verifyReceipt` (offline ed25519); `assertNoPlaintextSecrets`/`FORBIDDEN_EGRESS_KEYS`; frozen wire shapes. **Contract:** `contracts/account-wire.md`. Registered/paid only — never a free-tier path | a TLS-only `HttpTransport`; optional `serverPubkeyHex`. Ships only ciphertext + minimal metadata |
 | `sharedcorelib/pii` | `scanPayload`/`scanText`/`redactText`/`deidentifyText`/`redactPayload` (deterministic, no LLM), `PiiEngine`/`regexEngine`/`openMedEngine`, SSR-safe `PiiEgressDialog`/`summarizeMatches` | optional stronger engine (paid OpenMed Python sidecar). Use on every cloud egress (invariant 7) |
-| `sharedcorelib/multiuser` 🟡 *staged* | `generateSharedKey`, `multiWrap`/`addMember`/`removeMember` (rotate-on-remove), `unwrapShared`, `coUserRewrap`; compartments: `privateCompartment`/`compartmentOf`/`canAccessCompartment`/`syncTargets`/`rowsForRecipient` | per-user keys; row `compartment` tags. Reuses the recovery seal. **Rollout is a human staging decision** |
+| `sharedcorelib/multiuser` | `generateSharedKey`, `multiWrap`/`addMember`/`removeMember` (rotate-on-remove), `unwrapShared`, `coUserRewrap`; compartments: `privateCompartment`/`compartmentOf`/`canAccessCompartment`/`syncTargets`/`rowsForRecipient`; **member-class policy (UI-soft ONLY — no confidentiality claim; crypto-hard stays in compartments)**: `createMemberClassPolicy(rules)` / `createChildSoftPolicy(extraRules?)` → `MemberClassPolicy.isFeatureAllowed(memberClass, feature, categories?)` (first match wins, no rule ⇒ allowed), `MemberClassRule`, `CHILD_SOFT_DEFAULT_RULES`, `SENSITIVE_FEATURE_CATEGORIES` (`["finance","credentials","estate"]` — an OPEN vocabulary, apps tag their own gates). **Contract:** `contracts/multiuser-activation.md` | per-user keys; row `compartment` tags; the app's policy rules + per-gate category tags. Reuses the recovery seal. **Member-management UI is myLifeAssistant-only; free single-user behavior is unchanged when nothing is configured** |
 | `sharedcorelib/suite` 🟡 *engine implemented* | `createSuiteUpdater(config)` → background daily check (masters + registry + app/self version), verify-at-load + anti-rollback + freshness + native-owned confirm → hot-reload/next-launch; `createAppCatalog(config)` → the **app marketplace** (mobile "More"): list installed + uninstalled apps, install/open-marketing/uninstall/phone-sync; `TrustAnchor`/`DelegatedKey`/`PublishedApp`/`AppLocalState` types + pure helpers (see §7) | baked trust anchor (feed `baseUrl` + root + delegated keys + transport key), `fetchFile`/`now`/lease adapters, installed-version lookups, the native `confirmUpdate(...)`, apply/stage handlers, and for the marketplace the registry + per-app-private local-state adapters + `openExternal` |
 
 Every factory takes a **resolved config object**; there is no module-level state.
@@ -108,9 +108,12 @@ are never shared between apps.
   only). Apps **delete their local `src/sync/merge.ts`** and inject the Rust LAN byte-pipe as the
   `SyncTransport`. What remains in-app: only the native transport + any app-specific blob/credential
   re-seal hooks at the call site.
-- **Launch telemetry** — recording launches / counting distinct days is DB-bound
-  (app SQLite, an app migration). The shared part is the **tier ladder resolution**
-  (`/tiers`); the telemetry that feeds the tier context stays per-app.
+- **Launch telemetry** — recording launches / counting distinct days is DB-bound:
+  it lives in **app-OWNED namespaced tables in the one suite DB** (registered via
+  `registerSchemas`; trigger-/index-level SQL via `registerAuxMigrations`, §8.6 —
+  NOT a per-app Tauri-plugin migration, which is retired). The shared part is the
+  **tier ladder resolution** (`/tiers`); the telemetry data that feeds the tier
+  context stays app-owned.
 - **`FeatureGuard` gate defs / locked-state UI** — ✅ **`FeatureGuard` promoted into core**
   (Phase 6, SSR-safe, person-linked). The gate framework + store factory + `FeatureGuard` are now
   shared (`/gating`); the app still supplies its gate definitions + copy and the `renderLocked`
@@ -293,12 +296,19 @@ coreMinor >= m`. A newer app **upgrades the shared core in place** (bumps
 `core_version`); older apps keep working. A breaking change uses a **versioned
 subdir** (`core/v2/`) so majors coexist and each app picks its own.
 
+Current library package version: **0.4.0** — an **additive minor** (aux SQL
+migrations, schema duplicate-block policy, backup password option, multi-user
+activation). No API was deprecated or removed, so the **3-version deprecation
+window is unaffected**.
+
 ### 5.6 Never shared (security & independence)
 
-**Vaults** (per-app Argon2 salt) and app **secrets/settings** stay **strictly per-app and
-isolated**. The application **database is now shared** across installed apps (one suite DB
+The **Stronghold vault** (per-app Argon2 salt) and app **secrets** stay **strictly per-app
+and isolated**. The application **database is shared** across installed apps (ONE suite DB
 with per-app + common tables) — governed by the schema registry's confidentiality, see
-**§8**. (This revises the original "app SQLite DBs stay per-app"; the vault does NOT.)
+**§8**. App **settings/telemetry** are NOT vault material: they live as **app-owned
+namespaced tables in the suite DB** (§8.5). (This revises the original "app SQLite DBs
+stay per-app"; the vault does NOT.)
 
 ---
 
@@ -347,7 +357,8 @@ conflicts in the shared db" true simultaneously.
    ladder, gate defs + `computeFlags`, reminder generators + adapters, report
    templates, ICE fields, sync SPEC + transport.
 3. Call the core factories with that config; implement app-specific domain, pages,
-   migrations, import.
+   import. Schema changes go through `registerSchemas`; trigger-/index-level SQL through
+   `registerAuxMigrations` (§8.6) — never a per-app Tauri-plugin migration.
 4. Copy `core_bootstrap.rs` (change `APP_ID`), call `ensure_shared_core` in setup,
    register `shared_core_masters_dir`, and (on first download) bootstrap the
    shared-runtime bundle if absent (§7).
@@ -483,11 +494,16 @@ the catalog surfaces links + state; it never sideloads. Feed-supplied
 
 ## 8. Shared suite database + schema registry
 
-The suite runs **one shared client-side database** (in the shared suite dir, alongside the
-masters cache and registry) instead of N isolated app DBs. Goals: **no data duplication**
-(the same data lives once), apps can **read each other's data** under governance, and a
-**published app's schema is checked + merged** so two apps can't silently diverge on the
-same table.
+The suite runs **one shared client-side database** (`suite.db`, in the shared suite dir,
+alongside the masters cache and registry) instead of N isolated app DBs. **`suite.db` is
+the ONLY database** — apps are read/write **UX layers over it**, they own no private DB.
+At runtime an app's read scope is its **own tables + `common` tables only**
+(confidentiality-governed, §8.4); the lib's **backup/export (`/backup` with
+`suiteSourceFull`) is the one privileged all-tables path**. Legacy per-app DBs are
+**migrated into `suite.db` and then deleted** (a pre-customer, one-way step). Goals:
+**no data duplication** (the same data lives once), apps can **read each other's data**
+under governance, and a **published app's schema is checked + merged** so two apps can't
+silently diverge on the same table.
 
 ### 8.1 Tables: per-app + common
 
@@ -516,12 +532,19 @@ On publish, the app's schema manifest is checked against the registered schemas
   confidentiality downgrade, personal-data flip, relationship change, schema-kind change)
   → a **reported conflict that blocks the publish** until resolved.
 - **Duplicate candidates** — a proposed table whose Name + field shape matches an existing
-  one under a different owner is flagged so the publisher converts it to a **common** table
-  instead of duplicating the data.
+  one under a different owner (`columnSimilarity` ≥ `DUPLICATE_SIMILARITY_THRESHOLD` = 0.7
+  Jaccard over significant columns) is flagged so the publisher converts it to a **common**
+  table instead of duplicating the data. **Policy:** `checkAgainstRegistry(…, { duplicates })`
+  takes `"warn"` (advisory, the lib's default for back-compat) or `"block"` (a candidate is
+  a hard conflict). Two sanctioned exits from a block: the descriptor **`adopts: "ns#Name"`**
+  — it USES the existing table, `registerSchemas` creates nothing for it and reports it in
+  `RegisterResult.adopted` — or carries a reviewed **`duplicateOverride`** note (kept, with
+  the override echoed in the report).
 
 This is enforced at the consumer's build stage by `publisher-ci`'s **`schema-merge`** check
 (validates the manifest incl. DPDP, conflict-checks against a committed registry snapshot;
-the authoritative engine is `sharedcorelib/schema`).
+the authoritative engine is `sharedcorelib/schema`). **publisher-ci blocks duplicates by
+default** (`schema.duplicates: "warn"` in its config downgrades the block to advisory).
 
 ### 8.4 Access governance
 
@@ -533,12 +556,45 @@ THREAT_MODEL §4) so integrity-sensitive reads must not assume tamper-freedom.
 
 ### 8.5 What stays per-app
 
-The **vault** (per-app Argon2 salt) and app **secrets/settings** remain strictly isolated
-(§5.6). Only the application data DB is shared.
+The **Stronghold vault + per-app Argon2 salt** remain strictly per-app and isolated (§3,
+§5.6). App **settings and telemetry do NOT**: they are **app-OWNED namespaced tables in
+`suite.db`** like any other app data — registered descriptors, owner-gated writes,
+confidentiality-governed reads. Per-app there is no other storage; only vault material is
+outside the suite DB.
+
+### 8.6 Aux SQL migrations (`registerAuxMigrations`) — replaces per-app plugin migrations
+
+For what descriptors can't express (triggers, CHECK-bearing indexes, data backfills, …)
+the `/db` subsystem provides **app-scoped, versioned raw-SQL migrations** against the one
+suite DB. This **replaces the per-app Tauri-plugin SQL migration mechanism**, which is
+retired — apps run NO migrations of their own against `suite.db` outside this API.
+
+```ts
+registerAuxMigrations(db: SqlDb, appId: string, steps: AuxMigrationStep[])
+  : Promise<AuxMigrationResult>
+AuxMigrationStep   = { version: number; sql: string[] }   // version ≥ 1, strictly ascending
+AuxMigrationResult = { applied: number[]; skipped: number[] }
+```
+
+- **Run AFTER `registerSchemas`** — every table the SQL touches must already be registered.
+- **Append-only per app:** each applied step is recorded in **`__aux_migrations__`** keyed
+  `(app_id, version)`. Already-recorded versions are skipped (idempotent re-run); a NEW
+  step below the app's high-water mark is rejected; applied SQL is never edited — fix
+  forward with a new version.
+- **Ownership guard (security):** `referencedTables(sql)` conservatively parses every table
+  identifier a statement references (trigger ON-targets, INSERT/UPDATE/DELETE/FROM/JOIN,
+  index ON-targets, ALTER/CREATE/DROP TABLE, REFERENCES; comments/string literals/CTE names
+  excluded), and every statement may touch ONLY tables whose registry **owner is `appId`**.
+  Common tables (`owner: "common"`) require a core-owned step run as `appId === "common"`.
+  Unregistered tables and core-internal ones (`sqlite_*`, `__*`) are **denied outright** —
+  tables are created via `SchemaDescriptor`s, never via aux SQL. ALL pending statements are
+  guarded **before any SQL executes**.
 
 > Status: implemented + tested — the **schema engine** (`/schema`: descriptor + validate +
-> conflict/merge + duplicate detection), the **publish-time gate** (`publisher-ci`
-> `schema-merge`), AND the **runtime DB layer** (`/db`: DDL generation, on-disk registry with
-> append-only migrate + conflict-block, confidentiality-governed `read`/`write`/`list`). What
-> remains is app-side wiring: inject the Tauri `SqlDb`, call `registerSchemas` at
-> install/publish, and resolve each app's granted confidentiality level.
+> conflict/merge + duplicate detection with adopt/override exits), the **publish-time gate**
+> (`publisher-ci` `schema-merge`, duplicate-blocking by default), the **runtime DB layer**
+> (`/db`: DDL generation, on-disk registry with append-only migrate + conflict-block,
+> confidentiality-governed `read`/`write`/`list`), AND **aux SQL migrations** (§8.6). What
+> remains is app-side wiring: inject the Tauri `SqlDb`, call `registerSchemas` (+
+> `registerAuxMigrations`) at install/publish, and resolve each app's granted
+> confidentiality level.
