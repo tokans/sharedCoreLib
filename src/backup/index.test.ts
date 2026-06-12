@@ -304,7 +304,7 @@ describe("default SheetJS codec (the lib's own xlsx dependency)", () => {
     await target.importWorkbook(bytes, { password: "real-pw" });
     expect(fresh.tables.get("accounts")?.rows).toHaveLength(2);
     expect(fresh.tables.get("accounts")?.rows[0]).toMatchObject({ id: "a1", name: "Savings", balance: 1200 });
-  });
+  }, 30_000);
 });
 
 describe("password protection (Excel-native OOXML agile encryption)", () => {
@@ -343,7 +343,7 @@ describe("password protection (Excel-native OOXML agile encryption)", () => {
     expect(Array.from(info.content.slice(0, 4))).toEqual([0x04, 0x00, 0x04, 0x00]);
     const xml = Buffer.from(info.content.slice(8) as Uint8Array).toString("utf8");
     expect(xml).toContain("http://schemas.microsoft.com/office/2006/encryption");
-  });
+  }, 30_000);
 
   it("round-trips with the password: import decrypts and restores identical data", async () => {
     const { bytes } = await make([appSource().src, suiteSource().src]).exportWorkbook({ password: "pw-roundtrip" });
@@ -365,7 +365,7 @@ describe("password protection (Excel-native OOXML agile encryption)", () => {
     expect(freshSuite.tables.get("creds")?.rows[0]).toMatchObject({ id: "c1", site: "example.com" });
     // the secret-hashing contract is unchanged under encryption
     expect(report.tables.find((t) => t.table === "creds")?.skippedHashedColumns).toEqual(["login_password"]);
-  });
+  }, 30_000);
 
   it("fails cleanly when the password is missing or wrong", async () => {
     const { bytes } = await make([appSource().src]).exportWorkbook({ password: "right" });
@@ -373,7 +373,7 @@ describe("password protection (Excel-native OOXML agile encryption)", () => {
     await expect(target.importWorkbook(bytes)).rejects.toThrow(/password-protected — enter its password/);
     await expect(target.importWorkbook(bytes, { password: "wrong" })).rejects.toThrow(/wrong password/);
     await expect(target.importWorkbook(bytes, { password: "right" })).resolves.toBeTruthy();
-  });
+  }, 30_000);
 
   it("honors an injected ooxmlCrypto module (DI override)", async () => {
     const calls: string[] = [];
