@@ -70,6 +70,18 @@ describe("referencedTables (SQL table extraction)", () => {
     expect(referencedTables(`WITH cte AS (SELECT * FROM base) SELECT * FROM cte`)).toEqual(["base"]);
     expect(referencedTables("INSERT INTO `tick_t` VALUES (1)")).toEqual(["tick_t"]);
   });
+  it("extracts EVERY table in an old-style comma join (not just the first)", () => {
+    // Regression: `FROM a, b` previously yielded only ["a"], letting `b` (a foreign
+    // table) slip past the ownership guard.
+    expect(referencedTables(`SELECT * FROM a, b`).sort()).toEqual(["a", "b"]);
+    expect(referencedTables(`SELECT v.value FROM "myfinance_Account" acc, "myhealth_Vital" v WHERE acc.id = v.id`).sort())
+      .toEqual(["myfinance_Account", "myhealth_Vital"]);
+    // comma list bounded to the FROM clause: commas in the SELECT/function lists don't count
+    expect(referencedTables(`SELECT max(x), count(y) FROM t WHERE z IN (1, 2, 3)`)).toEqual(["t"]);
+    // alias forms + a subquery item (subquery's own table found by the outer scan)
+    expect(referencedTables(`SELECT * FROM a AS x, (SELECT * FROM inner_t) y, c`).sort())
+      .toEqual(["a", "c", "inner_t"]);
+  });
 });
 
 describe("registerAuxMigrations", () => {
@@ -152,6 +164,37 @@ describe("registerAuxMigrations", () => {
     // nothing executed, nothing recorded
     const hist = raw.prepare(`SELECT COUNT(*) AS n FROM "${AUX_MIGRATIONS_TABLE}"`).all() as { n: number }[];
     expect(hist[0]!.n).toBe(0);
+  });
+
+  it("blocks the comma-join exfil through an OWNED trigger body", async () => {
+    // Regression for the proven bypass: an owned trigger whose body comma-joins a foreign
+    // table to read it. The foreign table must be caught even though the trigger header
+    // and the first FROM table are both owned.
+    const { db, raw } = realDb();
+    await registerSchemas(db, [account(), vital()]);
+    await expect(registerAuxMigrations(db, "myfinance", [{
+      version: 1,
+      sql: [
+        `CREATE TRIGGER t_exfil AFTER INSERT ON "myfinance_Account" BEGIN ` +
+          `UPDATE "myfinance_Account" SET "audit" = ` +
+          `(SELECT v."value" FROM "myfinance_Account" a, "myhealth_Vital" v LIMIT 1) WHERE "id" = NEW."id"; END`,
+      ],
+    }])).rejects.toThrow(/owned by "myhealth", not "myfinance"/);
+    const hist = raw.prepare(`SELECT COUNT(*) AS n FROM "${AUX_MIGRATIONS_TABLE}"`).all() as { n: number }[];
+    expect(hist[0]!.n).toBe(0);
+  });
+
+  it("rejects ATTACH / PRAGMA / VACUUM outright (they bypass table extraction)", async () => {
+    const { db } = realDb();
+    await registerSchemas(db, [account()]);
+    for (const sql of [
+      `ATTACH DATABASE 'evil.db' AS evil`,
+      `PRAGMA writable_schema = ON`,
+      `VACUUM`,
+    ]) {
+      await expect(registerAuxMigrations(db, "myfinance", [{ version: 1, sql: [sql] }]))
+        .rejects.toThrow(/not allowed in app SQL/);
+    }
   });
 
   it("common-owned tables need a core-owned step (appId 'common'); apps are blocked", async () => {

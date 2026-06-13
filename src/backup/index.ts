@@ -113,6 +113,12 @@ export interface TablePlan {
   hashedColumns: string[];
   /** Qualified schema name when a descriptor governs this table. */
   qualified?: string;
+  /**
+   * Set when a descriptor-bearing source listed this table but no descriptor governs it,
+   * so ALL columns were hashed (fail-closed) to avoid leaking an unregistered Secret field.
+   * A non-empty set of these in an export signals a registration gap to investigate.
+   */
+  failClosed?: boolean;
 }
 
 export interface ExportReport {
@@ -251,14 +257,29 @@ async function tableColumns(db: SqlDb, table: string): Promise<string[]> {
   return rows.map((r) => r.name);
 }
 
-/** Which columns of `table` must be hashed, given its (optional) descriptor. */
+/**
+ * Which columns of `table` must be hashed, given its (optional) descriptor.
+ *
+ * FAIL-CLOSED (security): when the source declares descriptors (a registered/suite
+ * source) but this particular table has NONE, we cannot know which columns are Secret,
+ * so EVERY column is hashed rather than emitted as plaintext. Without this, a suite
+ * table that slipped registration — auto-discovered into a `suiteSourceFull` dump —
+ * would leak its Secret columns (e.g. one named `value`/`data`, outside the name rule)
+ * as plaintext, and via the cross-app full-suite export that leak rides out in ANOTHER
+ * app's workbook. A descriptor-LESS source (no registry at all) keeps the legacy
+ * name-pattern-only behavior.
+ */
 function hashedColumnsFor(
   columns: string[],
   descriptor: SchemaDescriptor | undefined,
   floor: Confidentiality,
   namePattern: RegExp,
+  sourceHasDescriptors: boolean,
 ): string[] {
-  if (!descriptor) return columns.filter((c) => namePattern.test(c));
+  if (!descriptor) {
+    if (sourceHasDescriptors) return [...columns]; // fail closed: registered source, unknown table → hash all
+    return columns.filter((c) => namePattern.test(c)); // descriptor-less source → name rule only
+  }
   const byCol = new Map<string, Confidentiality>();
   for (const f of descriptor.fields) byCol.set(f.dbAlias ?? f.name, f.confidentiality ?? descriptor.confidentiality);
   return columns.filter((c) => {
@@ -312,6 +333,7 @@ export function createExcelBackup(cfg: ExcelBackupConfig): ExcelBackup {
     const taken = new Set<string>([META_SHEET, TABLES_SHEET, SCHEMAS_SHEET]);
     for (const src of cfg.sources) {
       const tables = (src.tables ?? (await discoverTables(src.db))).filter((t) => !excluded.has(t));
+      const sourceHasDescriptors = (src.descriptors?.length ?? 0) > 0;
       for (const table of tables) {
         const columns = await tableColumns(src.db, table);
         if (!columns.length) continue; // absent table (e.g. suite table not created yet)
@@ -321,8 +343,10 @@ export function createExcelBackup(cfg: ExcelBackupConfig): ExcelBackup {
           table,
           sheet: sheetNameFor(table, taken),
           columns,
-          hashedColumns: hashedColumnsFor(columns, d, floor, nameRe),
+          hashedColumns: hashedColumnsFor(columns, d, floor, nameRe, sourceHasDescriptors),
           qualified: d ? qualifiedName(d) : undefined,
+          // A registered source listing a table with no descriptor → fully hashed (fail-closed).
+          failClosed: sourceHasDescriptors && !d ? true : undefined,
         });
       }
     }

@@ -2,7 +2,9 @@ import { describe, it, expect } from "vitest";
 import {
   generateSharedKey, multiWrap, unwrapShared, addMember, removeMember, coUserRewrap,
   privateCompartment, compartmentOf, canAccessCompartment, syncTargets, rowsForRecipient,
-  type Member,
+  createPrivateCompartmentKey, unwrapPrivateCompartmentKey, keyForCompartment,
+  sealForCompartment, openForCompartment,
+  type Member, type CompartmentKeyring,
 } from "./index.js";
 
 const alice: Member = { userId: "alice", userKey: "ALICE-KEY-AAAA-BBBB" };
@@ -72,5 +74,58 @@ describe("private compartments", () => {
     ];
     expect(rowsForRecipient(rows, "alice").map((r) => r.id)).toEqual([1, 2]);
     expect(rowsForRecipient(rows, "bob").map((r) => r.id)).toEqual([1, 3]);
+  });
+});
+
+describe("crypto-hard private compartments (per-user keys)", () => {
+  it("a member can unwrap their OWN private key; nobody else can", async () => {
+    const { wrapped } = await createPrivateCompartmentKey(alice);
+    await expect(unwrapPrivateCompartmentKey(wrapped, alice.userKey)).resolves.toBeInstanceOf(Uint8Array);
+    // Bob (or anyone) with the wrong user key fails the GCM tag — he cannot derive Alice's PK.
+    await expect(unwrapPrivateCompartmentKey(wrapped, bob.userKey)).rejects.toThrow();
+  });
+
+  it("keyForCompartment yields a key for self/shared, but NULL for another's private", async () => {
+    const sk = generateSharedKey();
+    const { key: alicePk } = await createPrivateCompartmentKey(alice);
+    const aliceRing: CompartmentKeyring = { userId: "alice", sharedKey: sk, privateKey: alicePk };
+    expect(keyForCompartment("shared", aliceRing)).toBe(sk);
+    expect(keyForCompartment(privateCompartment("alice"), aliceRing)).toBe(alicePk);
+    expect(keyForCompartment(privateCompartment("bob"), aliceRing)).toBeNull(); // crypto-hard: no key held
+  });
+
+  it("a foreign private row is UNREADABLE even with its ciphertext in hand", async () => {
+    const sk = generateSharedKey();
+    const { key: alicePk } = await createPrivateCompartmentKey(alice);
+    const { key: bobPk } = await createPrivateCompartmentKey(bob);
+    const aliceRing: CompartmentKeyring = { userId: "alice", sharedKey: sk, privateKey: alicePk };
+    const bobRing: CompartmentKeyring = { userId: "bob", sharedKey: sk, privateKey: bobPk };
+
+    // Alice seals a private note. The ciphertext is handed to Bob (e.g. a leaked/synced blob).
+    const blob = await sealForCompartment({ note: "alice-only secret" }, privateCompartment("alice"), aliceRing);
+    // Bob holds no key for Alice's compartment → openForCompartment returns null (not the data).
+    expect(await openForCompartment(blob, privateCompartment("alice"), bobRing)).toBeNull();
+    // Alice opens her own.
+    expect(await openForCompartment<{ note: string }>(blob, privateCompartment("alice"), aliceRing))
+      .toEqual({ note: "alice-only secret" });
+  });
+
+  it("shared rows are readable by every member; sealing into another's space throws", async () => {
+    const sk = generateSharedKey();
+    const aliceRing: CompartmentKeyring = { userId: "alice", sharedKey: sk };
+    const bobRing: CompartmentKeyring = { userId: "bob", sharedKey: sk };
+    const blob = await sealForCompartment({ v: 42 }, "shared", aliceRing);
+    expect(await openForCompartment<{ v: number }>(blob, "shared", bobRing)).toEqual({ v: 42 });
+    // Alice cannot seal INTO Bob's private compartment (she holds no key for it).
+    await expect(sealForCompartment({ v: 1 }, privateCompartment("bob"), aliceRing)).rejects.toThrow(/no key/);
+  });
+
+  it("the AAD binds a sealed payload to its compartment (no cross-compartment replay)", async () => {
+    const sk = generateSharedKey();
+    const { key: alicePk } = await createPrivateCompartmentKey(alice);
+    const aliceRing: CompartmentKeyring = { userId: "alice", sharedKey: sk, privateKey: alicePk };
+    const blob = await sealForCompartment({ note: "x" }, privateCompartment("alice"), aliceRing);
+    // Re-tagging the same bytes as a shared row must fail the AAD check, not silently open.
+    await expect(openForCompartment(blob, "shared", aliceRing)).rejects.toThrow();
   });
 });

@@ -229,8 +229,9 @@ const TABLE_POSITION_PATTERNS: RegExp[] = [
   new RegExp(`\\bREPLACE\\s+INTO\\s+${SQL_TBL}`, "gi"),
   new RegExp(`\\bUPDATE\\s+(?:OR\\s+(?:REPLACE|IGNORE|ABORT|FAIL|ROLLBACK)\\s+)?${SQL_TBL}\\s+SET\\b`, "gi"),
   new RegExp(`\\bDELETE\\s+FROM\\s+${SQL_TBL}`, "gi"),
-  new RegExp(`\\bFROM\\s+${SQL_TBL}`, "gi"),
-  new RegExp(`\\bJOIN\\s+${SQL_TBL}`, "gi"),
+  // NOTE: plain FROM/JOIN tables are extracted by scanFromJoinTables (below), NOT here —
+  // a `\bFROM <tbl>` regex captures only the FIRST table, so the old-style comma join
+  // `FROM a, b` would leave `b` (a possibly foreign table) invisible to the guard.
   new RegExp(`\\bALTER\\s+TABLE\\s+${SQL_TBL}`, "gi"),
   new RegExp(`\\bDROP\\s+TABLE\\s+(?:IF\\s+EXISTS\\s+)?${SQL_TBL}`, "gi"),
   new RegExp(`\\bCREATE\\s+(?:TEMP(?:ORARY)?\\s+)?TABLE\\s+(?:IF\\s+NOT\\s+EXISTS\\s+)?${SQL_TBL}`, "gi"),
@@ -238,12 +239,58 @@ const TABLE_POSITION_PATTERNS: RegExp[] = [
   new RegExp(`\\bREFERENCES\\s+${SQL_TBL}`, "gi"),
 ];
 
+// The leading table identifier of one FROM/JOIN-list item: `[schema.]table [[AS] alias]`.
+// A subquery item (`(SELECT …) x`) starts with `(` and yields nothing here — its own
+// FROM/JOIN tables are found by the global scan over the whole cleaned statement.
+const FROM_ITEM_LEAD = new RegExp(`^\\s*${SQL_TBL}`, "i");
+// Keywords that END a FROM/JOIN clause's comma-list (so commas in SELECT/INSERT-column/
+// function-argument lists are never mistaken for additional join tables).
+const FROM_LIST_STOP =
+  /^\s+(?:WHERE|GROUP|HAVING|ORDER|LIMIT|OFFSET|WINDOW|UNION|EXCEPT|INTERSECT|RETURNING|ON|USING|SET|VALUES|JOIN|INNER|LEFT|RIGHT|FULL|OUTER|CROSS|NATURAL|FROM)\b/i;
+
+/**
+ * Scan every FROM/JOIN clause and return ALL referenced tables, INCLUDING the
+ * old-style comma join `FROM a, b, c`. Bounded to the clause (stops at the next SQL
+ * clause keyword) and paren-aware (a `(SELECT …)` subquery is skipped here; its own
+ * tables are caught by the outer scan), so commas outside a FROM-list never count.
+ */
+function scanFromJoinTables(clean: string): string[] {
+  const found: string[] = [];
+  const kw = /\b(?:FROM|JOIN)\b/gi;
+  let m: RegExpExecArray | null;
+  while ((m = kw.exec(clean)) !== null) {
+    let i = m.index + m[0].length;
+    let depth = 0;
+    let buf = "";
+    const items: string[] = [];
+    const flush = (): void => {
+      if (buf.trim()) items.push(buf);
+      buf = "";
+    };
+    while (i < clean.length) {
+      const ch = clean[i]!;
+      if (ch === "(") { depth++; buf += ch; i++; continue; }
+      if (ch === ")") { if (depth === 0) break; depth--; buf += ch; i++; continue; }
+      if (depth === 0 && ch === ",") { flush(); i++; continue; }
+      if (depth === 0 && ch === ";") break;
+      if (depth === 0 && FROM_LIST_STOP.test(clean.slice(i))) break;
+      buf += ch; i++;
+    }
+    flush();
+    for (const item of items) {
+      const lead = FROM_ITEM_LEAD.exec(item);
+      if (lead) found.push(unquoteSqlIdent(lead[1]!));
+    }
+  }
+  return found;
+}
+
 /**
  * Extract the table identifiers a raw SQL statement references (trigger ON-targets,
- * INSERT/UPDATE/DELETE/SELECT/JOIN targets incl. trigger bodies, index ON-targets,
- * ALTER/CREATE/DROP TABLE, REFERENCES). CTE names declared in the same statement are
- * excluded. Comments and string literals are ignored. Conservative by design: it is
- * the input to a deny-on-unknown ownership guard.
+ * INSERT/UPDATE/DELETE/SELECT/JOIN targets incl. trigger bodies and comma joins, index
+ * ON-targets, ALTER/CREATE/DROP TABLE, REFERENCES). CTE names declared in the same
+ * statement are excluded. Comments and string literals are ignored. Conservative by
+ * design: it is the input to a deny-on-unknown ownership guard.
  */
 export function referencedTables(sql: string): string[] {
   const clean = stripSqlNoise(sql);
@@ -253,17 +300,28 @@ export function referencedTables(sql: string): string[] {
     cteNames.add(unquoteSqlIdent(m[1]!).toLowerCase());
   }
   const out = new Map<string, string>(); // lowercased → first-seen spelling
+  const record = (name: string): void => {
+    const key = name.toLowerCase();
+    if (!cteNames.has(key) && !out.has(key)) out.set(key, name);
+  };
   for (const re of TABLE_POSITION_PATTERNS) {
-    for (const m of clean.matchAll(re)) {
-      const name = unquoteSqlIdent(m[1]!);
-      const key = name.toLowerCase();
-      if (!cteNames.has(key) && !out.has(key)) out.set(key, name);
-    }
+    for (const m of clean.matchAll(re)) record(unquoteSqlIdent(m[1]!));
   }
+  for (const name of scanFromJoinTables(clean)) record(name);
   return [...out.values()];
 }
 
+// Statements that reach outside the registered-table model entirely (attach a foreign
+// DB file, flip schema-mutating pragmas, …). Table extraction can't reason about them,
+// so they are denied outright rather than waved through with an empty referenced-set.
+const FORBIDDEN_LEADING_KEYWORD = /^\s*(?:ATTACH|DETACH|PRAGMA|VACUUM)\b/i;
+
 function assertStatementOwned(stmt: string, appId: string, ownerByTable: Map<string, string>): void {
+  const clean = stripSqlNoise(stmt);
+  if (FORBIDDEN_LEADING_KEYWORD.test(clean)) {
+    const kw = FORBIDDEN_LEADING_KEYWORD.exec(clean)![0].trim().toUpperCase();
+    throw new Error(`aux migration blocked — "${kw}" is not allowed in app SQL (it bypasses the table-ownership guard)`);
+  }
   for (const t of referencedTables(stmt)) {
     const key = t.toLowerCase();
     if (key.startsWith("sqlite_") || key.startsWith("__")) {

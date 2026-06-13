@@ -433,4 +433,32 @@ describe("suiteSourceFull (the suite-wide everything dump)", () => {
     expect(String(sheetRows(wb, "other_tokens")[0]!.value)).toMatch(HASHED_VALUE_RE);
     expect(sheetRows(wb, "other_tokens")[0]!.service).toBe("mail");
   });
+
+  it("FAIL-CLOSED: an auto-discovered table with NO descriptor is fully hashed, not leaked", async () => {
+    // Regression: a suite table that slipped registration, with a Secret column named
+    // outside the name rule (`value`), previously exported as PLAINTEXT — and via the
+    // cross-app full dump that leak rides out in another app's workbook.
+    const suite = memDb({
+      registered: { columns: ["id", "note"], rows: [{ id: "r1", note: "ok" }] },
+      mystery_secrets: { columns: ["id", "value"], rows: [{ id: "m1", value: "PLAINTEXT_SECRET" }] },
+      [REGISTRY_TABLE]: { columns: ["qualified", "descriptor"], rows: [] },
+    });
+    const registeredDesc: SchemaDescriptor = {
+      namespace: "myapp", name: "Reg", schemaType: "Table", dbAlias: "registered",
+      confidentiality: "Internal", owner: "myapp",
+      fields: [{ name: "id", dataType: "id", keyField: true }, { name: "note", dataType: "string" }],
+    };
+    const src = suiteSourceFull(suite.db, { "myapp#Reg": registeredDesc }); // mystery_secrets NOT in registry
+    const { bytes, report } = await make([src]).exportWorkbook();
+
+    const mystery = report.tables.find((t) => t.table === "mystery_secrets")!;
+    expect(mystery.failClosed).toBe(true);
+    expect(mystery.hashedColumns.sort()).toEqual(["id", "value"]); // ALL columns hashed
+    const wb = readWb(bytes);
+    expect(String(sheetRows(wb, "mystery_secrets")[0]!.value)).toMatch(HASHED_VALUE_RE);
+    expect(String(sheetRows(wb, "mystery_secrets")[0]!.value)).not.toContain("PLAINTEXT_SECRET");
+    // the registered table is unaffected — its non-secret column stays readable
+    expect(report.tables.find((t) => t.table === "registered")!.failClosed).toBeUndefined();
+    expect(sheetRows(wb, "registered")[0]!.note).toBe("ok");
+  });
 });
