@@ -20,10 +20,15 @@
 import type { MasterOption } from "./index.js";
 // JSON import attributes (`with { type: "json" }`) are REQUIRED for Node strict-ESM consumers
 // at runtime; without them Node rejects the bare JSON import (it only worked under bundlers).
+// The small reference sets stay static; the big city seed (600KB+) is loaded lazily from
+// `./cities.js` (dynamic import → its own async chunk) so consumers don't bundle it eagerly.
 import countries from "./data/countries.json" with { type: "json" };
 import currencies from "./data/currencies.json" with { type: "json" };
 import relationships from "./data/relationships.json" with { type: "json" };
-import citiesSeed from "./data/cities.seed.json" with { type: "json" };
+import { getBakedCitiesSync, getBakedCities, loadCommonCities } from "./cities.js";
+
+// Re-export the lazy city loaders so consumers can prewarm via `sharedcorelib/masters`.
+export { getBakedCities, loadCommonCities };
 
 /** Reserved scope for core-owned reference data shared by every app. */
 export const COMMON_SCOPE = "common";
@@ -55,18 +60,6 @@ export function isCommonMaster(id: string): id is CommonMasterId {
   return (COMMON_MASTER_IDS as readonly string[]).includes(id);
 }
 
-const CITY_SEED = citiesSeed as Record<string, string[]>;
-
-/** Parent-scoped baked cities for a country code (the seed is keyed by country). */
-function bakedCitiesFor(parent: string | null): MasterOption[] {
-  if (!parent) return [];
-  return (CITY_SEED[parent] ?? []).map((c) => ({
-    value: c,
-    label: c,
-    source: "baked" as const,
-  }));
-}
-
 const COMMON_BAKED: Record<Exclude<CommonMasterId, "city">, MasterOption[]> = {
   country: countries as MasterOption[],
   currency: currencies as MasterOption[],
@@ -76,11 +69,16 @@ const COMMON_BAKED: Record<Exclude<CommonMasterId, "city">, MasterOption[]> = {
 /**
  * Baked options for a common master, resolving parent-scoped sets (cities ←
  * country code). This is the SINGLE source of truth for these sets across apps.
+ *
+ * NOTE on cities: the city seed is loaded lazily (see `./cities.js`). `getCommonBaked("city")`
+ * returns the cities synchronously ONLY after `loadCommonCities()` has resolved at least once
+ * (prewarm it before showing a city picker); until then it returns []. This keeps the heavy
+ * seed out of every consumer's eager bundle. Or call the async `getBakedCities(parent)` directly.
  */
 export function getCommonBaked(
   id: CommonMasterId,
   parent: string | null = null,
 ): MasterOption[] {
-  if (id === "city") return bakedCitiesFor(parent);
+  if (id === "city") return getBakedCitiesSync(parent);
   return COMMON_BAKED[id];
 }
