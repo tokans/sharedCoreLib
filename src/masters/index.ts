@@ -27,6 +27,11 @@ export {
   parseMasterKey,
   isCommonMaster,
   getCommonBaked,
+  // City seed is lazy (heavy JSON kept out of the eager bundle). `getCommonBaked`
+  // returns [] for cities until `loadCommonCities()` has resolved once; consumers
+  // prewarm via these, or fetch directly via the async `getBakedCities`.
+  loadCommonCities,
+  getBakedCities,
   COMMON_MASTER_IDS,
   type CommonMasterId,
 } from "./common.js";
