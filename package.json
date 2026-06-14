@@ -1,6 +1,7 @@
 {
   "name": "sharedcorelib",
   "version": "0.4.0",
+  "license": "MIT",
   "private": true,
   "type": "module",
   "description": "App-agnostic local-first infrastructure shared across the suite (myFinance, myHealth, future apps). Library only — no app DB, pages or branding; every mechanism is parameterized by an injected config object (DI, no singletons). Mirrors the @mydemo/core extraction precedent.",
