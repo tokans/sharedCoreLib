@@ -1,0 +1,22 @@
+[
+  {
+    "id": "phy10-light",
+    "name": "Light — Reflection and Refraction",
+    "focus": "Optics",
+    "summary": "Reflection at curved mirrors, refraction through lenses, and the mirror/lens formulae.",
+    "steps": [
+      { "title": "Reflection at spherical mirrors", "instruction": "Define centre of curvature, focus, and the mirror formula 1/v + 1/u = 1/f." },
+      { "title": "Refraction through lenses", "instruction": "Trace rays through convex/concave lenses; apply the lens formula and magnification." }
+    ]
+  },
+  {
+    "id": "phy10-electricity",
+    "name": "Electricity",
+    "focus": "Current electricity",
+    "summary": "Ohm's law, resistance, series/parallel circuits, and heating effect of current.",
+    "steps": [
+      { "title": "Ohm's law", "instruction": "State V = IR and plot V–I to find resistance." },
+      { "title": "Series and parallel", "instruction": "Derive equivalent resistance for series and parallel combinations." }
+    ]
+  }
+]

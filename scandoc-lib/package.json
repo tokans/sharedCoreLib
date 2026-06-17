@@ -20,16 +20,34 @@
         "default": "./dist/index.js"
       }
     },
+    "./ocr": {
+      "import": {
+        "types": "./dist/ocr/index.d.mts",
+        "default": "./dist/ocr/index.mjs"
+      },
+      "require": {
+        "types": "./dist/ocr/index.d.ts",
+        "default": "./dist/ocr/index.js"
+      }
+    },
     "./package.json": "./package.json"
   },
   "files": ["dist", "README.md"],
   "keywords": ["ocr", "scanned-document", "document-parser", "fuzzy-match", "confidence", "mylife"],
   "scripts": {
-    "build": "tsup src/index.ts --format cjs,esm --dts",
-    "dev": "tsup src/index.ts --format cjs,esm --dts --watch",
+    "build": "tsup src/index.ts src/ocr/index.ts --format cjs,esm --dts",
+    "dev": "tsup src/index.ts src/ocr/index.ts --format cjs,esm --dts --watch",
     "test": "vitest run",
     "test:watch": "vitest",
     "type-check": "tsc --noEmit"
+  },
+  "peerDependencies": {
+    "pdfjs-dist": "^4.0.0",
+    "tesseract.js": "^5.0.0"
+  },
+  "peerDependenciesMeta": {
+    "pdfjs-dist": { "optional": true },
+    "tesseract.js": { "optional": true }
   },
   "devDependencies": {
     "tsup": "^8.0.0",

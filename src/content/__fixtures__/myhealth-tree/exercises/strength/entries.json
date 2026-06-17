@@ -1,0 +1,13 @@
+[
+  {
+    "id": "ex-bodyweight-basics",
+    "name": "Bodyweight Basics",
+    "level": "beginner",
+    "focus": "Strength",
+    "summary": "A simple full-body circuit with no equipment.",
+    "steps": [
+      { "title": "Squats", "instruction": "Sit back and down, then stand. 10 slow reps.", "durationSec": 45 },
+      { "title": "Glute Bridge", "instruction": "Lift the hips and squeeze. 10 reps.", "durationSec": 45 }
+    ]
+  }
+]

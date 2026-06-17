@@ -16,6 +16,7 @@ import { create, type StoreApi, type UseBoundStore } from "zustand";
 import { isTauri } from "../env/index.js";
 
 export * from "./featureGuard.js";
+export * from "./disclosure.js";
 
 /** A progressively-unlocked feature, gated on a boolean predicate over the app's flags. */
 export interface FeatureGate<TFlags, K extends string = string> {

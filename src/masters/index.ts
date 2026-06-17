@@ -18,6 +18,7 @@
 import { z } from "zod";
 import { verifyAsync, etc } from "@noble/ed25519";
 import { isTauri } from "../env/index.js";
+import { COMMON_SCOPE } from "./common.js";
 
 // Common masters + the scope/namespacing convention that keeps a shared store
 // conflict-free. Re-exported so `sharedcorelib/masters` is the one import surface.
@@ -185,9 +186,18 @@ export const genericManifestSchema = z.object({
     .min(1),
 });
 
+/** What a manifest entry pins its file to — passed to {@link VerifyOptions.fetchFile} so a cache can self-validate. */
+export interface ExpectedFile {
+  sha256: string;
+  bytes: number;
+}
+
 export interface VerifyOptions<T extends BaseManifest = BaseManifest> {
-  /** Fetch a ciphertext file by its manifest filename. */
-  fetchFile: (file: string) => Promise<Uint8Array>;
+  /**
+   * Fetch a ciphertext file by its manifest filename. `expected` (when provided) lets a
+   * caching layer validate a cache hit against the signed manifest before trusting it.
+   */
+  fetchFile: (file: string, expected?: ExpectedFile) => Promise<Uint8Array>;
   pubkeyHex: string;
   transportKeyB64: string;
   /** Override the manifest validation schema (default: {@link genericManifestSchema}). */
@@ -226,13 +236,98 @@ export async function verifyAndDecryptManifest<T extends BaseManifest = BaseMani
 
   const entries: VerifiedEntry[] = [];
   for (const e of manifest.entries) {
-    const enc = await opts.fetchFile(e.file);
+    const enc = await opts.fetchFile(e.file, { sha256: e.sha256, bytes: e.bytes });
     if (enc.length !== e.bytes) throw new Error(`size mismatch for ${e.file}`);
     if ((await sha256Hex(enc)) !== e.sha256) throw new Error(`sha256 mismatch for ${e.file}`);
     const plain = await decryptTransport(enc, opts.transportKeyB64);
     entries.push({ id: e.id, version: e.version, payload: JSON.parse(textDecode(plain)) });
   }
   return { manifest, entries };
+}
+
+// ── Shared on-disk bundle cache (the L2 reuse win) ──────────────────────────
+//
+// CONTRACT §5.4: the FIRST suite app to pull downloads the signed bundle into the
+// shared masters dir; the SECOND reuses those bytes — no second download. Entry
+// ciphertexts are content-addressed (the signed manifest pins each by SHA-256), so a
+// cache hit is validated against the manifest before it is trusted; a stale/poisoned
+// cache entry simply misses and is re-fetched. The manifest + signature themselves are
+// NEVER cached (always fetched fresh) so revision/freshness gating stays current.
+
+/** Minimal filesystem the bundle cache needs. Injected (DI) so the cache is testable without Tauri. */
+export interface CacheFs {
+  exists(path: string): Promise<boolean>;
+  readFile(path: string): Promise<Uint8Array>;
+  writeFile(path: string, data: Uint8Array): Promise<void>;
+  /** Create a directory (recursive); best-effort, must not throw if it already exists. */
+  mkdir(path: string): Promise<void>;
+}
+
+/** Join cache path parts with `/` (Tauri's fs plugin accepts forward slashes on every OS). */
+function joinCachePath(...parts: string[]): string {
+  return parts.map((p) => p.replace(/[\\/]+$/, "")).join("/");
+}
+
+export interface CachedFetchOptions {
+  /** Fetch the file from the network (the throw-on-error transport). */
+  fetchNetwork: (file: string) => Promise<Uint8Array>;
+  fs: CacheFs;
+  /** Shared cache root (the L2 masters dir injected by the bootstrap). */
+  dir: string;
+  /** Per-app/per-scope subdir so apps sharing `dir` never collide on filenames. */
+  namespace: string;
+}
+
+/**
+ * A `fetchFile` that reads through a shared on-disk cache. On a hit it validates the
+ * cached bytes against the manifest's `expected` {size, sha256}; only a matching hit
+ * skips the network. A miss (or a failed validation) fetches from the network and
+ * writes the bytes back to the cache for the next app. All cache IO is best-effort:
+ * any fs error falls back to the network so an update never fails because of the cache.
+ */
+export function createCachedFetch(
+  o: CachedFetchOptions,
+): (file: string, expected?: ExpectedFile) => Promise<Uint8Array> {
+  const nsDir = joinCachePath(o.dir, o.namespace);
+  return async (file: string, expected?: ExpectedFile): Promise<Uint8Array> => {
+    const path = joinCachePath(nsDir, file);
+    try {
+      if (await o.fs.exists(path)) {
+        const cached = await o.fs.readFile(path);
+        // Trust a hit only when it matches the signed manifest (or no expectation given).
+        if (!expected || (cached.length === expected.bytes && (await sha256Hex(cached)) === expected.sha256)) {
+          return cached;
+        }
+      }
+    } catch {
+      // Unreadable cache → fall through to the network.
+    }
+    const fresh = await o.fetchNetwork(file);
+    try {
+      await o.fs.mkdir(nsDir);
+      await o.fs.writeFile(path, fresh);
+    } catch {
+      // Cache write is an optimization, never a hard failure.
+    }
+    return fresh;
+  };
+}
+
+/** Default cache fs backed by the Tauri fs plugin (lazy-imported; desktop/mobile only). */
+async function tauriCacheFs(): Promise<CacheFs> {
+  const fs = await import("@tauri-apps/plugin-fs");
+  return {
+    exists: (p) => fs.exists(p),
+    readFile: (p) => fs.readFile(p),
+    writeFile: (p, d) => fs.writeFile(p, d),
+    mkdir: async (p) => {
+      try {
+        await fs.mkdir(p, { recursive: true });
+      } catch {
+        // already exists / race — fine.
+      }
+    },
+  };
 }
 
 // ── OTA updater factory ─────────────────────────────────────────────────────
@@ -263,10 +358,16 @@ export interface OtaUpdaterConfig<T extends BaseManifest = BaseManifest> {
   /**
    * Optional shared on-disk cache directory for downloaded bundles. Injecting the
    * SAME path across suite apps is what lets the FIRST app's download be REUSED by
-   * the SECOND (the L2 shared-masters-cache win — see CONTRACT.md). Reserved here
-   * for the bootstrap to wire; the engine treats an absent value as "no cache".
+   * the SECOND (the L2 shared-masters-cache win — see CONTRACT.md §5.4). The bootstrap
+   * wires this from the `shared_core_masters_dir` Tauri command; an absent value means
+   * "no cache" (always fetch from the network).
    */
   cacheDir?: string;
+  /**
+   * Filesystem used for {@link cacheDir}. Defaults to the Tauri fs plugin (lazy-imported)
+   * when `cacheDir` is set and running under Tauri. Inject a fake in tests.
+   */
+  cacheFs?: CacheFs;
   /**
    * Namespace under {@link cacheDir} this app's downloaded bundles are written to,
    * so multiple suite apps sharing the cache never collide on filenames. Use the
@@ -311,6 +412,30 @@ export function createOtaUpdater<T extends BaseManifest = BaseManifest>(
     return out;
   }
 
+  /**
+   * The entry-file fetcher handed to the verifier: read-through the shared on-disk
+   * cache when `cacheDir` is wired (the L2 reuse win), else fetch straight from the
+   * network. Resolved per-run so a missing fs plugin can't break a cacheless app.
+   */
+  async function entryFetcher(): Promise<(file: string, expected?: ExpectedFile) => Promise<Uint8Array>> {
+    const fetchNetwork = (file: string) => fetchBytes(`${base}/${file}`);
+    if (!cfg.cacheDir) return fetchNetwork;
+    let fs = cfg.cacheFs;
+    if (!fs) {
+      try {
+        fs = await tauriCacheFs();
+      } catch {
+        return fetchNetwork; // no fs plugin → run without a cache.
+      }
+    }
+    return createCachedFetch({
+      fetchNetwork,
+      fs,
+      dir: cfg.cacheDir,
+      namespace: cfg.cacheNamespace ?? COMMON_SCOPE,
+    });
+  }
+
   async function runUpdate(opts: { force?: boolean } = {}): Promise<boolean> {
     if (!isTauri() || cfg.enabled?.() === false || inFlight) return false;
     if (!opts.force && cfg.isDue && !cfg.isDue()) return false;
@@ -322,7 +447,7 @@ export function createOtaUpdater<T extends BaseManifest = BaseManifest>(
       ]);
 
       const { manifest, entries } = await verifyAndDecryptManifest<T>(manifestBytes, decodeSig(sigFile), {
-        fetchFile: (file) => fetchBytes(`${base}/${file}`),
+        fetchFile: await entryFetcher(),
         pubkeyHex: cfg.pubkeyHex,
         transportKeyB64: cfg.transportKeyB64,
         manifestSchema: cfg.manifestSchema,

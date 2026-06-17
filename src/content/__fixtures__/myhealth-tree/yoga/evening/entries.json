@@ -1,0 +1,13 @@
+[
+  {
+    "id": "yoga-evening-unwind",
+    "name": "Evening Unwind",
+    "level": "beginner",
+    "focus": "Relaxation",
+    "summary": "Calming forward folds and rest before sleep.",
+    "steps": [
+      { "title": "Seated Forward Fold", "instruction": "Reach toward your feet, spine long.", "durationSec": 45 },
+      { "title": "Corpse Pose", "instruction": "Lie flat and let the body soften.", "durationSec": 60 }
+    ]
+  }
+]

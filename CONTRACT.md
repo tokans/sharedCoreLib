@@ -63,8 +63,9 @@ the single bundled copy); the lib also lists them as devDeps so it type-checks i
 | `sharedcorelib/grant` | `verifyGrant`, `createGrantReceiver`, `GrantEnvelope`/`GrantKeys`/`GrantReceiver` | grant signing keys (**separate** from masters keys), `parsePayload`, and the receive-only channels `readDroppedFile` / `fetchByToken` (file-drop / anonymous backend token). Receive-only — never uploads |
 | `sharedcorelib/schema` | `SchemaDescriptor`/`FieldDescriptor`/`RelationshipDescriptor` + `validateDescriptor`, `compareSchema`, `checkAgainstRegistry`, `mergeIntoRegistry`, `qualifiedName`, `Confidentiality`/`CONFIDENTIALITY_ORDER`; **duplicate policy**: descriptor `adopts: "ns#Name"` (use an existing table, create none) + `duplicateOverride` (reviewed keep-anyway note), `checkAgainstRegistry(proposed, registry, { duplicates: "block" \| "warn" })` (lib default `"warn"` for back-compat; **publisher-ci blocks by default**, see §8.3), `columnSimilarity`, `DUPLICATE_SIMILARITY_THRESHOLD` (0.7 Jaccard) | each table's semantic descriptor (fields/relationships/constraints/purpose/confidentiality/`personalData`); the registry snapshot to check against (see §8) |
 | `sharedcorelib/db` | DDL: `createTableSql`/`addColumnSql`/`migrationFor`/`sqliteType`/`tableName`; registry: `ensureRegistry`/`loadRegistry`/`registerSchemas` (append-only migrate + conflict-block; `RegisterResult.adopted` lists adopting descriptors, which create no table); **aux SQL migrations** (replaces per-app Tauri-plugin migrations, see §8.6): `registerAuxMigrations(db, appId, steps)` + `AuxMigrationStep`/`AuxMigrationResult`/`AUX_MIGRATIONS_TABLE`/`referencedTables`; governance: `createSharedDb({appId,grantedLevel,registry})` → `read`/`write`/`list`, `visibleColumns`/`schemaVisibleAt`/`canAppWrite`; `SqlDb` | an injected `SqlDb` (the Tauri SQL plugin), the calling `appId` + granted `Confidentiality`. Runs the ONE shared suite DB (see §8) |
-| `sharedcorelib/gating` | `FeatureGate`, `isFeatureUnlocked`, `createGatingStore(config)`, `GatingState`; **person-linked**: `revealKey(user,app,gate?)`, `PRIMARY_USER_KEY`; **nudge**: `pickNudge`/`Nudge`/`NudgeContext`; **`FeatureGuard`** (SSR-safe, promoted into core) | flag shape, gate defs + copy, `computeFlags()` (queries app DB), `unlockedAll`, optional `override` (wire to `hasPatronAccess`). `FeatureGuard` takes `renderLocked`/`renderLoading` for app-specific UI, plus the ADDITIVE `memberAccess?: FeatureGuardMemberAccess` prop (`{policy, memberClass?, categories?, renderDenied?}`) — when supplied, the `(member_class, feature)` policy from `/multiuser` is enforced first (UI-soft only); omitted ⇒ behavior exactly as before (free single-user unchanged). |
+| `sharedcorelib/gating` | `FeatureGate`, `isFeatureUnlocked`, `createGatingStore(config)`, `GatingState`; **person-linked**: `revealKey(user,app,gate?)`, `PRIMARY_USER_KEY`; **nudge**: `pickNudge`/`Nudge`/`NudgeContext`; **progressive disclosure** (promoted into core, Phase 6): `GateVisibility` (`"open"\|"nudge"\|"hidden"`), `TieredGate` (a `FeatureGate` + `tier?`/`lockBehavior`), the one-tier-ahead resolvers `rankVisibility(gap)` / `tierVisibility(tier,flags,disclosure)` / `gateVisibility(gate,flags,disclosure)`, and the app-injected `TierDisclosure` (`rankOf`/`clearedRank`) that keeps app tier names + predicates out of core; **`FeatureGuard`** (SSR-safe, promoted into core) | flag shape, gate defs + copy, `computeFlags()` (queries app DB), `unlockedAll`, optional `override` (wire to `hasPatronAccess`). `FeatureGuard` takes `renderLocked`/`renderLoading` for app-specific UI, plus the ADDITIVE `memberAccess?: FeatureGuardMemberAccess` prop (`{policy, memberClass?, categories?, renderDenied?}`) — when supplied, the `(member_class, feature)` policy from `/multiuser` is enforced first (UI-soft only); omitted ⇒ behavior exactly as before (free single-user unchanged). |
 | `sharedcorelib/backup` | Whole-store **Excel backup/restore** every app exposes from Settings: `createExcelBackup(config)` → `plan()`/`exportWorkbook()`/`importWorkbook()` — ONE `.xlsx`, one sheet per table + `_meta`/`_tables`/`_schemas` sheets. **`suiteSourceFull(db, registry)` is the standard suite source**: the ENTIRE shared `suite.db` (every installed app's tables, auto-discovered; the full registry drives hashing) — any app's export is the suite-wide "everything the system has" dump, and its suite sheets **restore from any app's workbook** (sources marked `shared` accept foreign-app files; per-app sources still refuse them unless `force`, reported in `foreignAppSheets`). `suiteSourceForApp(db, registry, appId)` remains for an owner-scoped slice. **Secrets never export in the clear:** fields at/above the `hashAtOrAbove` confidentiality floor (default `Secret`), or matching the secret-name pattern in descriptorless tables, become one-way `sha256:<hex>` fingerprints and are **skipped on import** (a fingerprint can never overwrite a real secret). **Fail-closed:** in a descriptor-bearing source (e.g. `suiteSourceFull`), a table auto-discovered with NO governing descriptor has **every** column hashed (it's flagged `TablePlan.failClosed`), so an unregistered/under-tagged Secret column can never leak as plaintext — a registration gap degrades to over-hashing, not disclosure. Import is `merge` (upsert) or `replace`; foreign-app files refused unless `force`; absent descriptor-backed tables are recreated from the embedded `_schemas`. **Optional password protection (Excel-native):** `exportWorkbook({ password? })` wraps the workbook in **ECMA-376 agile encryption** (Excel itself prompts on open); `importWorkbook({ password? })` auto-detects an encrypted CFB container; `isEncryptedWorkbook(bytes)` lets UIs prompt before importing; `ExportReport.encrypted` reports the state. The encryptor is the pinned MIT **`officecrypto-tool@0.0.19`** regular dependency (the second approved dep exception after `xlsx`), **lazy-loaded only on the password path** and overridable via `config.ooxmlCrypto` (DI). Plaintext stays the default; the password is **unrecoverable by design** (no escrow — invariant 2); secret-field sha256 fingerprinting runs BEFORE encryption, unchanged. `BACKUP_FORMAT`/`BACKUP_FORMAT_VERSION`/`HASHED_VALUE_RE`, `XlsxModule` | its `SqlDb` handles (own app DB + the suite slice via `suiteSourceForApp`) and its `appId`. SheetJS comes with the lib (`xlsx` is a **regular dependency** of sharedcorelib — pinned SheetJS-CDN 0.20.3 tarball, lazy-imported on first use; consuming apps get it transitively and may override via `config.xlsx`, which tests use to inject a fake). Settings UI: drop in **`BackupPanel`** from `sharedcorelib/ui` (pass a Tauri `save` handler; browser download is the preview fallback) |
+| `sharedcorelib/content` | **folder-driven content-tab framework** (promoted from myHealth): model `ContentType`/`ContentTypeMeta`/`ContentEntry`/`ContentStep`/`ContentBundle`/`ContentLevel` + pure helpers `totalDurationSec`/`formatDuration`/`mergeEntries`/`bundleEntries`/`focusTags`/`stepImage`; OTA payload schemas `contentBundleSchema`/`contentTypeMetaSchema` (image URLs restricted to `data:`/`https:`); registry merge `collectBakedTypes(globModules)`/`mergeTypes(baked,remote,resolveIcon)`/`findContentType`; `createContentStore(config)` — per type an **available** catalog (`availableByType`, what the user can install) + the **installed** set (`bundlesByType`, active in the content list); `setAvailable`/`installBundle`/`removeBundle` (remove uninstalls but keeps it available to re-add) + remote-type catalog, persisted to localStorage (public reference data, no DB migration); `createContentSync(config)` → `runContentSync`/`checkTypeNow`/`isConfigured`/`canRun` (daily, receive-only; reuses `/masters` `createOtaUpdater` per release tag: catalog registers NEW tabs without an app update, then per-type bundles → the AVAILABLE catalog, updating any already-installed bundle to its latest version; content bundles have NO anti-rollback so the catalog always refreshes and a user-removed bundle reappears as installable). Optional `fetchBytes` runs the SAME verify→decrypt (`verifyAndDecryptManifest`) over an injected fetcher OUTSIDE Tauri — e.g. a `window.fetch` wrapper for a browser dev preview; `canRun()` = configured AND (in Tauri OR `fetchBytes` injected). `ContentType` is generic over the icon component type + the app's tier names. **Arbitrary-depth content TREES** (`./tree`): `buildContentTree(files)`/`buildContentTreeFromGlob(globTexts)` fold a flat file list into a `ContentNode` tree of ANY depth (`content/yoga/morning/…` shallow → `content/[board]/[class]/[subject]/[book]/…` deep). Every folder is a node; the FILES in it are PROPERTIES (filename→name, value parsed by extension via `parseProperty`: `.json`→JSON, `.yaml`/`.yml`→YAML (built-in `parseSimpleYaml`, or inject your own), text-like→string, else→`{kind:"file"}` reference never read); subfolders are children; leaves hold the main content. Helpers `nodeAt`/`nodeLabel`/`nodeOrder`/`nodeEntries`/`leaves`/`prop`/`propString`/`propData`. Pure + filesystem-free — the app gathers files via `import.meta.glob`. A type can also carry inline **SUBTYPES**: `ContentType.tree?: ContentNode` built in code with `buildNodeTree(def)` (a nested `{key,label,order,entries,children}` def → a navigable node tree; leaf `entries` attach directly). The app renders a type's tree as a breadcrumb + next-node dropdown navigator (UI stays in-app). | the app runs its OWN `import.meta.glob` over its `content/<type>/` folders and passes the modules to `collectBakedTypes`; an icon-name→component `resolveIcon`; release `baseUrl` + `catalogTag` + per-type `releaseTag`, signing `pubkeyHex` + `transportKeyB64`, `appVersion`, a `storageKey`, and `listTypes()`. The page UI, routing, nav wiring + glob stay in-app (mirrors the FeatureGate/FeatureGuard split). |
 | `sharedcorelib/reminders` | pure scheduling (`daysBetween`, `addDaysISO`, `addYearsISO`, `bucketFor`, `shouldNotify`, `nextAnnual`, `fyReviewDueDate`, `byDueDate`, `dueLabel`, `isSnoozed`, `DUE_SOON_DAYS`, `ReminderLike`); notify (`ensureNotificationPermission`, `sendNotification`); `runReminderSweep(adapters)` | the derived-reminder generators + DB adapters (`syncDerived`, `listOpen`, `markFired`) + `today` |
 | `sharedcorelib/report` | `printHtmlAsPdf`, `escapeHtml` | the report HTML templates |
 | `sharedcorelib/ice` | `mentionsContact`, `telHref`, `mailtoHref`, `hasActionableContact`, `CONTACT_PHRASES` | ICE-card fields + disclaimer copy |
@@ -284,17 +285,44 @@ So removing one app never breaks another.
 
 ### 5.4 Masters OTA cache injection (the cleanest win)
 
-`createOtaUpdater({ ... cacheDir })` accepts the shared masters path. The webview
-gets it from the `shared_core_masters_dir` Tauri command (which calls
+`createOtaUpdater({ ... cacheDir, cacheNamespace })` accepts the shared masters path.
+The webview gets it from the `shared_core_masters_dir` Tauri command (which calls
 `ensure_shared_core`). The **first** suite app to pull downloads the signed bundle
-into `…/core/masters`; the **second** reuses the cache — no second download. Each
-app still applies only the master *types it registers* into its **own** SQLite
-`master_options`/`partners` (the downloaded bytes are shared; the materialised
-per-app tables are not). *Status:* the bootstrap + path injection + config knob are
-in place; materialising the downloaded bundle to `cacheDir` (vs re-fetch) is the
-remaining incremental step in `createOtaUpdater`.
+into `…/core/masters/<namespace>/`; the **second** reuses the cache — no second
+download. Each app still applies only the master *types it registers* into its **own**
+SQLite `master_options`/`partners` (the downloaded bytes are shared; the materialised
+per-app tables are not). *Status:* **done.** Entry ciphertexts now materialise to
+`cacheDir` via a read-through, SHA-256-validated cache (`createCachedFetch` + the
+injectable `CacheFs`, default `@tauri-apps/plugin-fs`): a cache hit is checked against
+the signed manifest before it is trusted, a stale/poisoned hit is re-fetched, and any
+cache IO error falls back to the network so an update never fails on the cache. The
+manifest + signature are never cached (always fetched fresh) so revision/freshness
+gating stays current. `cacheNamespace` defaults to `common` (the shared common-masters
+bundle reused by all apps); apps pass their app id for app-specific bundles.
 
-### 5.5 Versioning
+### 5.5 Producing + hosting a masters feed
+
+What an installed app pulls from the feed `baseUrl` is three kinds of file:
+`masters.manifest.json`, its detached `masters.manifest.json.sig`, and one
+AES-256-GCM-encrypted `.bin` per entry. Produce them with:
+
+1. `sharedcorelib/masters/feed-builder` → `buildMastersManifest(entries, opts)` —
+   **key-free**: encrypts each payload, pins it by size + SHA-256, and returns the exact
+   manifest bytes to sign. No private key lives in the runtime package.
+2. `scripts/build-masters-feed.mjs` (scaffolded by `publisher-ci init`) — the **offline**
+   step: loads the secret transport + **data** signing keys from files (env-referenced,
+   never in CI), calls the builder, Ed25519-signs the manifest bytes, and writes the
+   bundle to a feed dir. Driven by a `masters.feed.json` spec; **bump `revision` every
+   publish** (anti-downgrade, enforced both at build time and by the verifier).
+3. `scripts/publish-feed.mjs` — uploads the signed bundle to the publisher release that
+   backs the feed `baseUrl`. Accepts a masters-only feed, the suite TUF feed, or both.
+
+The masters bundle is signed with the **data** delegated key (`publisher.trust.json
+→ delegations.data`); the app's baked OTA `pubkeyHex` is that key's public half. Signing
+is offline — keys never enter the runtime or CI (THREAT_MODEL §2; the `release-pipeline`
+check fails the build if a signing key appears in the workflow).
+
+### 5.6 Versioning
 
 Backward-compatible **within a major**: apps require `coreMajor == N &&
 coreMinor >= m`. A newer app **upgrades the shared core in place** (bumps
@@ -306,7 +334,7 @@ migrations, schema duplicate-block policy, backup password option, multi-user
 activation). No API was deprecated or removed, so the **3-version deprecation
 window is unaffected**.
 
-### 5.6 Never shared (security & independence)
+### 5.7 Never shared (security & independence)
 
 The **Stronghold vault** (per-app Argon2 salt) and app **secrets** stay **strictly per-app
 and isolated**. The application **database is shared** across installed apps (ONE suite DB

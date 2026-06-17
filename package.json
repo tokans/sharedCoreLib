@@ -1,6 +1,6 @@
 {
   "name": "sharedcorelib",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "license": "MIT",
   "private": true,
   "type": "module",
@@ -72,6 +72,10 @@
       "types": "./dist/gating/index.d.ts",
       "import": "./dist/gating/index.js"
     },
+    "./content": {
+      "types": "./dist/content/index.d.ts",
+      "import": "./dist/content/index.js"
+    },
     "./reminders": {
       "types": "./dist/reminders/index.d.ts",
       "import": "./dist/reminders/index.js"
@@ -99,6 +103,10 @@
     "./masters/cities": {
       "types": "./dist/masters/cities.d.ts",
       "import": "./dist/masters/cities.js"
+    },
+    "./masters/feed-builder": {
+      "types": "./dist/masters/feed-builder.d.ts",
+      "import": "./dist/masters/feed-builder.js"
     },
     "./suite": {
       "types": "./dist/suite/index.d.ts",

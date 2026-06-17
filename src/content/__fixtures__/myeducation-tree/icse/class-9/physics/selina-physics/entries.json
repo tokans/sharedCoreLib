@@ -1,0 +1,10 @@
+[
+  {
+    "id": "icse-phy9-measurements",
+    "name": "Measurements and Experimentation",
+    "summary": "SI units, least count, and using vernier callipers and a screw gauge.",
+    "steps": [
+      { "title": "Least count", "instruction": "Compute the least count of a vernier calliper and a screw gauge." }
+    ]
+  }
+]

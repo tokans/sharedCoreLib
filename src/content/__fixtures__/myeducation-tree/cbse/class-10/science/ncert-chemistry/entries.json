@@ -1,0 +1,10 @@
+[
+  {
+    "id": "chem10-reactions",
+    "name": "Chemical Reactions and Equations",
+    "summary": "Balancing equations and classifying reactions (combination, decomposition, displacement).",
+    "steps": [
+      { "title": "Balancing equations", "instruction": "Balance atoms on each side; never change formulae, only coefficients." }
+    ]
+  }
+]

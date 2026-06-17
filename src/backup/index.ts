@@ -368,6 +368,7 @@ export function createExcelBackup(cfg: ExcelBackupConfig): ExcelBackup {
         const src = cfg.sources.find((s) => s.id === p.sourceId)!;
         const rows = await src.db.select<Record<string, unknown>>(`SELECT * FROM "${p.table.replace(/[^A-Za-z0-9_]/g, "_")}"`);
         const out: Record<string, unknown>[] = [];
+        let exportedRows = 0;
         for (const row of rows) {
           const copy: Record<string, unknown> = {};
           for (const col of p.columns) {
@@ -378,6 +379,9 @@ export function createExcelBackup(cfg: ExcelBackupConfig): ExcelBackup {
                 : v ?? null;
           }
           out.push(copy);
+          // Yield periodically so a large table doesn't freeze the webview (tables with
+          // no hashed columns never hit the await above, so this loop can run fully sync).
+          if (++exportedRows % 250 === 0) await new Promise((r) => setTimeout(r, 0));
         }
         X.utils.book_append_sheet(wb, X.utils.json_to_sheet(out, { header: p.columns }), p.sheet);
         tableRows.push({
@@ -507,6 +511,8 @@ export function createExcelBackup(cfg: ExcelBackupConfig): ExcelBackup {
             vals,
           );
           written++;
+          // Yield periodically so a large restore keeps the webview responsive.
+          if (written % 250 === 0) await new Promise((r) => setTimeout(r, 0));
         }
 
         report.tables.push({

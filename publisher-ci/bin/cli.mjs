@@ -69,6 +69,8 @@ function cmdInit(appDir, flags) {
   writeIfAbsent("release/pages/index.template.html", ".github/pages/index.template.html");
   writeIfAbsent("release/scripts/deploy.mjs", "scripts/deploy.mjs");
   writeIfAbsent("release/scripts/publish-feed.mjs", "scripts/publish-feed.mjs");
+  writeIfAbsent("release/scripts/build-masters-feed.mjs", "scripts/build-masters-feed.mjs");
+  writeIfAbsent("release/masters.feed.example.json", "masters.feed.example.json");
   writeIfAbsent("release/scripts/launch-campaign.mjs", "scripts/launch-campaign.mjs");
   // Vendored growth-campaign-loop scripts (stdlib Python) so CI + the human share tooling.
   for (const f of ["utm_builder.py", "metrics_tracker.py", "experiment_scorecard.py", "outreach_mailmerge.py", "README.md"]) {
@@ -86,6 +88,14 @@ function cmdInit(appDir, flags) {
        gh-pages / root) → site at https://${publishOwner}.github.io/${repoName}/
     4. npx sharedcorelib-publisher-ci check    # gate must pass
     5. node scripts/deploy.mjs v0.1.0          # tag + push → builds & publishes
+
+  Masters OTA feed (the daily-updated reference data):
+    a. Copy masters.feed.example.json → masters.feed.json and fill in your masters
+       (bump \`revision\` on every publish — anti-downgrade).
+    b. OFFLINE, with the secret keys mounted:
+         MASTERS_SIGNING_KEY_FILE=… MASTERS_TRANSPORT_KEY_FILE=… \\
+           node scripts/build-masters-feed.mjs masters.feed.json ./dist-suite
+    c. node scripts/publish-feed.mjs ./dist-suite   # uploads to the feed baseUrl
 `);
 }
 

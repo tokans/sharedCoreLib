@@ -53,6 +53,8 @@ export const ota = createOtaUpdater({
   baseUrl: TRUST.feed.baseUrl, pubkeyHex: TRUST.delegations.data.publicKeyHex,
   transportKeyB64: "<...>", getLastRevision: async () => /* read app meta */ 0,
   applyEntry: async (e) => { /* upsert into app master_options under <appId>: scope */ },
+  // Shared L2 cache → first app's download is reused by the rest (CONTRACT §5.4).
+  cacheDir: await invoke<string>("shared_core_masters_dir"), // cacheNamespace defaults to "common"
 });
 
 export const gating = createGatingStore({ initialFlags, unlockedAll, computeFlags });
@@ -165,10 +167,16 @@ name; override with `--app-name` / `--repo-name` / `--publish-owner`, default ow
 - [ ] `.github/pages/index.template.html` — landing page (edit freely; keep `__VERSION__`
       etc. for the workflow to fill at publish time).
 - [ ] `scripts/deploy.mjs` (tag + push) and `scripts/publish-feed.mjs` (offline-signed feed upload).
+- [ ] `scripts/build-masters-feed.mjs` + `masters.feed.example.json` — the offline masters-feed
+      producer. Copy the example to `masters.feed.json`, fill in your masters, then **offline**:
+      `MASTERS_SIGNING_KEY_FILE=… MASTERS_TRANSPORT_KEY_FILE=… node scripts/build-masters-feed.mjs
+      masters.feed.json ./dist-suite` → `node scripts/publish-feed.mjs ./dist-suite`. Bump
+      `revision` every publish (anti-downgrade). Signs with the **data** delegated key; keys stay offline.
 - [ ] Publisher repo `tokans/<repo>` created; source-repo secret **`PUBLISH_TOKEN`** added
       (PAT, `contents: write` on the publisher repo).
 - [ ] Pages enabled on `tokans/<repo>` (gh-pages / root) → `https://tokans.github.io/<repo>/`.
-- [ ] Suite updater `baseUrl` points at the publisher repo's feed release.
+- [ ] Suite updater `baseUrl` points at the publisher repo's feed release; OTA `createOtaUpdater`
+      wired with `cacheDir` (from `shared_core_masters_dir`) so downloads materialise + reuse across apps.
 - [ ] `release-pipeline` check green (PUBLISH_TOKEN present, correct owner, no signing keys in CI).
 
 ## Definition of done (whole app)

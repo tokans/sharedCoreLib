@@ -208,7 +208,16 @@ IO adapters and the native confirmation UI. Behaviour was settled with these dec
 `CONTRACT.md` §5): the shared dir holds the shared-runtime bundle, the masters cache,
 the published-apps registry + client-local state, and the updater lease. Adding/removing
 an app is refcounted via `owners[]`; the shared dir is deleted only when the last app is
-removed, so uninstalling one app never breaks another.
+removed, so uninstalling one app never breaks another. The masters cache is a
+read-through, SHA-256-validated on-disk cache (`createCachedFetch`): the first app's
+download materialises under `…/core/masters/<namespace>/` and every later app reuses it.
+
+**Producing the feed (publisher side).** Build a signed masters bundle with
+`buildMastersManifest` (`sharedcorelib/masters/feed-builder` — key-free encrypt + hash +
+manifest), then sign it **offline** with `scripts/build-masters-feed.mjs` (Ed25519 over
+the manifest bytes, keys never in CI) and upload via `scripts/publish-feed.mjs`. Both
+scripts are scaffolded by `publisher-ci init`; bump the spec's `revision` every publish.
+See `CONTRACT.md` §5.5.
 
 ## Security
 

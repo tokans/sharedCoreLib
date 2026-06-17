@@ -1,0 +1,11 @@
+{
+  "$comment": "Spec for build-masters-feed.mjs. Copy to masters.feed.json, fill in your masters, BUMP `revision` on every publish (anti-downgrade). Each entry is encrypted + signed into the bundle the suite updater pulls daily. `payloadFile` reads JSON from disk; `payload` is inline. Use `common:<id>` for core-owned shared masters and `<appId>:<id>` for your app's own.",
+  "revision": 1,
+  "minAppVersion": "1.0.0",
+  "entries": [
+    { "id": "common:country", "version": 1, "payloadFile": "src/masters/data/countries.json" },
+    { "id": "__APP_ID__:institution", "version": 1, "payload": [
+      { "value": "example-bank", "label": "Example Bank" }
+    ] }
+  ]
+}

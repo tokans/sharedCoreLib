@@ -1,0 +1,13 @@
+[
+  {
+    "id": "yoga-morning-wake-up",
+    "name": "Morning Wake-Up Flow",
+    "level": "beginner",
+    "focus": "Morning energy",
+    "summary": "A gentle flow to loosen up and breathe before the day starts.",
+    "steps": [
+      { "title": "Mountain Pose", "instruction": "Stand tall, feet hip-width, breathe.", "durationSec": 30 },
+      { "title": "Forward Fold", "instruction": "Hinge at the hips and let the upper body hang.", "durationSec": 30 }
+    ]
+  }
+]

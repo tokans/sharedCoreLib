@@ -24,9 +24,17 @@ if (!existsSync(feedDir)) die(`feed dir "${feedDir}" not found — build + sign 
 const files = readdirSync(feedDir).map((f) => join(feedDir, f));
 if (!files.length) die(`feed dir "${feedDir}" is empty`);
 
-// Sanity: signed metadata must be present (the updater verifies these).
-for (const required of ["suite.snapshot.json", "suite.snapshot.json.sig", "suite.timestamp.json", "suite.timestamp.json.sig"]) {
-  if (!existsSync(join(feedDir, required))) die(`missing signed metadata: ${required} (sign offline before publishing)`);
+// Sanity: at least one signed feed must be present (the updater verifies these), and
+// every metadata file must carry its detached `.sig`. The suite TUF feed and the
+// standalone masters feed (build-masters-feed.mjs) can ship together or on their own.
+const has = (f) => existsSync(join(feedDir, f));
+const hasSuite = ["suite.snapshot.json", "suite.snapshot.json.sig", "suite.timestamp.json", "suite.timestamp.json.sig"].every(has);
+const hasMasters = has("masters.manifest.json") && has("masters.manifest.json.sig");
+if (!hasSuite && !hasMasters) {
+  die("no signed feed found — expected the suite TUF metadata and/or masters.manifest.json (+ .sig). Build + sign offline first.");
+}
+for (const meta of ["suite.snapshot.json", "suite.timestamp.json", "masters.manifest.json"]) {
+  if (has(meta) && !has(`${meta}.sig`)) die(`missing signature: ${meta}.sig (sign offline before publishing)`);
 }
 
 console.log(`Uploading feed (${files.length} files) to ${REPO} (${tag})…`);
