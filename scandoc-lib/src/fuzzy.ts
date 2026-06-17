@@ -61,6 +61,11 @@ export function rankMatches<T>(
     let best = -1;
     let via = "";
     for (const alias of aliasesOf(item)) {
+      // Length-bound prune: similarity can never exceed 1 - |Δlen|/maxLen, so skip the
+      // O(query·alias) DP for aliases that can't beat the current best or reach minScore.
+      const maxLen = Math.max(query.length, alias.length);
+      const ceil = maxLen === 0 ? 1 : 1 - Math.abs(query.length - alias.length) / maxLen;
+      if (ceil <= best || ceil < minScore) continue;
       const s = similarity(query, alias);
       if (s > best) {
         best = s;

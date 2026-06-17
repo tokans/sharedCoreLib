@@ -41,15 +41,20 @@ export const CONTACT_PHRASES = [
  * matching so "recall" or "information" don't false-trigger. Pass custom phrases
  * to extend/replace the default set.
  */
+const phraseRegex = (p: string): RegExp =>
+  new RegExp(`(^|[^a-z])${p.replace(/\s+/g, "\\s+")}([^a-z]|$)`);
+// Precompile the default phrase set once (this is the hot path); custom phrase
+// lists compile on demand.
+const DEFAULT_PHRASE_REGEXES = CONTACT_PHRASES.map(phraseRegex);
+
 export function mentionsContact(
   action: string | null | undefined,
   phrases: string[] = CONTACT_PHRASES,
 ): boolean {
   if (!action) return false;
   const h = action.toLowerCase();
-  return phrases.some((p) =>
-    new RegExp(`(^|[^a-z])${p.replace(/\s+/g, "\\s+")}([^a-z]|$)`).test(h),
-  );
+  const regexes = phrases === CONTACT_PHRASES ? DEFAULT_PHRASE_REGEXES : phrases.map(phraseRegex);
+  return regexes.some((re) => re.test(h));
 }
 
 /**

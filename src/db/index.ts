@@ -480,6 +480,12 @@ export function createSharedDb(cfg: SharedDbConfig): SharedDb {
       const cols = visibleColumns(s, cfg.grantedLevel);
       if (!cols.length) throw new Error(`forbidden: no readable columns of ${qualified} at ${cfg.grantedLevel}`);
       const colList = cols.map((c) => `"${c.replace(/[^A-Za-z0-9_]/g, "_")}"`).join(", ");
+      // `where` is a trusted, app-supplied predicate (values go through opts.params).
+      // Reject statement-stacking / comment markers so a careless consumer that ever
+      // derives it from untrusted input can't smuggle a second statement past this sink.
+      if (opts.where && /;|--|\/\*/.test(opts.where)) {
+        throw new Error(`invalid where clause: ${opts.where}`);
+      }
       const where = opts.where ? ` WHERE ${opts.where}` : "";
       const limit = opts.limit ? ` LIMIT ${Number(opts.limit)}` : "";
       return cfg.db.select(`SELECT ${colList} FROM ${ident(tableName(s))}${where}${limit}`, opts.params);

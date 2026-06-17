@@ -184,18 +184,10 @@ const confRank = (c: Confidentiality): number => CONFIDENTIALITY_ORDER.indexOf(c
 
 // ── Password protection (ECMA-376 agile encryption) ──────────────────────────
 
-/** OLE/CFB compound-file signature — what an encrypted OOXML container starts with (a plain `.xlsx` starts with zip's `PK`). */
-const CFB_SIGNATURE = [0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1] as const;
-
-/**
- * Whether `bytes` are a password-protected workbook (an OLE/CFB encryption container)
- * rather than a plain `.xlsx` zip. Pure signature check — no parsing, no lazy imports —
- * so UIs can decide to prompt for a password BEFORE calling `importWorkbook`.
- */
-export function isEncryptedWorkbook(bytes: ArrayBuffer | Uint8Array): boolean {
-  const u8 = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
-  return u8.length >= CFB_SIGNATURE.length && CFB_SIGNATURE.every((b, i) => u8[i] === b);
-}
+// `isEncryptedWorkbook` lives in the dependency-free `./detect.js` leaf so UIs can
+// import it without pulling this engine; re-exported here to keep the public surface.
+import { isEncryptedWorkbook } from "./detect.js";
+export { isEncryptedWorkbook };
 
 /**
  * `officecrypto-tool` needs Node-style Buffers; fail with an actionable message where
@@ -224,8 +216,10 @@ function adaptOfficeCrypto(mod: unknown): OoxmlCryptoModule {
   };
 }
 
+const SENTINEL_ENCODER = new TextEncoder();
+
 async function sha256Sentinel(value: unknown): Promise<string> {
-  const bytes = new TextEncoder().encode(String(value));
+  const bytes = SENTINEL_ENCODER.encode(String(value));
   const digest = await crypto.subtle.digest("SHA-256", bytes.buffer as ArrayBuffer);
   const hex = Array.from(new Uint8Array(digest), (b) => b.toString(16).padStart(2, "0")).join("");
   return `sha256:${hex}`;

@@ -105,6 +105,9 @@ export function meetsMinVersion(appVersion: string, minVersion: string): boolean
   for (let i = 0; i < Math.max(a.length, m.length); i++) {
     const x = a[i] ?? 0;
     const y = m[i] ?? 0;
+    // Fail closed on a malformed segment (Number("x") === NaN) — NaN comparisons
+    // are all false, which would otherwise silently treat the gate as "meets".
+    if (Number.isNaN(x) || Number.isNaN(y)) return false;
     if (x > y) return true;
     if (x < y) return false;
   }
@@ -125,11 +128,10 @@ export async function verifyManifestSignature(
   }
 }
 
-/** Hex SHA-256 of a byte buffer (Web Crypto — available in webview + Node test env). */
-export async function sha256Hex(bytes: Uint8Array): Promise<string> {
-  const digest = await crypto.subtle.digest("SHA-256", asSource(bytes));
-  return etc.bytesToHex(new Uint8Array(digest));
-}
+// sha256Hex lives in the dependency-free `./hash.js` leaf so the offline feed-builder
+// can hash without importing this engine; re-exported here to keep the public surface.
+import { sha256Hex } from "./hash.js";
+export { sha256Hex };
 
 /** AES-256-GCM decrypt a `iv(12) || ciphertext || tag(16)` blob with the transport key. */
 export async function decryptTransport(enc: Uint8Array, keyB64: string): Promise<Uint8Array> {

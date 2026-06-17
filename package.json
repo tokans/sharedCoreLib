@@ -100,6 +100,14 @@
       "types": "./dist/ui/cn.d.ts",
       "import": "./dist/ui/cn.js"
     },
+    "./ui/attribution": {
+      "types": "./dist/ui/attribution.d.ts",
+      "import": "./dist/ui/attribution.js"
+    },
+    "./ui/harness": {
+      "types": "./dist/ui/harness.d.ts",
+      "import": "./dist/ui/harness.js"
+    },
     "./masters/cities": {
       "types": "./dist/masters/cities.d.ts",
       "import": "./dist/masters/cities.js"

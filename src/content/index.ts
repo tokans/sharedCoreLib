@@ -172,11 +172,12 @@ const stepSchema = z.object({
   title: z.string().min(1).max(120),
   instruction: z.string().min(1).max(2000),
   durationSec: z.number().int().positive().max(36000).optional(),
-  // Only data: URIs or https images — never javascript:/http: — receive-only + safe.
+  // Only raster data: URIs or https images — never javascript:/http:, and never
+  // SVG (it can embed <script>, which executes in CSS/<object>/<use> contexts).
   image: z
     .string()
     .max(2_000_000)
-    .regex(/^(data:image\/|https:\/\/)/)
+    .regex(/^(data:image\/(png|jpe?g|gif|webp|avif);|https:\/\/)/)
     .optional(),
 });
 
@@ -336,76 +337,68 @@ export function createContentStore<Tier extends string = string>(
   };
 
   return create<ContentStoreState<Tier>>((set, get) => {
-    const persist = (p: Persisted<Tier>) => {
+    const write = () => {
+      const s = get();
       try {
-        globalThis.localStorage?.setItem(cfg.storageKey, JSON.stringify(p));
+        globalThis.localStorage?.setItem(
+          cfg.storageKey,
+          JSON.stringify({
+            bundlesByType: s.bundlesByType,
+            availableByType: s.availableByType,
+            revisionByType: s.revisionByType,
+            remoteTypes: s.remoteTypes,
+            catalogRevision: s.catalogRevision,
+            lastCheckedAt: s.lastCheckedAt,
+          } satisfies Persisted<Tier>),
+        );
       } catch {
         /* ignore quota / privacy-mode errors */
       }
     };
-    const snapshot = (): Persisted<Tier> => {
-      const s = get();
-      return {
-        bundlesByType: s.bundlesByType,
-        availableByType: s.availableByType,
-        revisionByType: s.revisionByType,
-        remoteTypes: s.remoteTypes,
-        catalogRevision: s.catalogRevision,
-        lastCheckedAt: s.lastCheckedAt,
-      };
+    // Coalesce persistence onto a microtask so a sync that fires many setters in one
+    // tick (setAvailable + N upsertBundle …) serializes the whole store ONCE, not
+    // O(types · bundles) times. Readers see updates synchronously (set is immediate);
+    // only the localStorage mirror is deferred — and it always writes the latest state.
+    let scheduled = false;
+    const persist = () => {
+      if (scheduled) return;
+      scheduled = true;
+      queueMicrotask(() => {
+        scheduled = false;
+        write();
+      });
     };
 
     const upsertInstalled = (typeKey: string, bundle: ContentBundle) => {
       const existing = get().bundlesByType[typeKey] ?? [];
       const next = [...existing.filter((b) => b.bundleId !== bundle.bundleId), bundle];
-      const bundlesByType = { ...get().bundlesByType, [typeKey]: next };
-      persist({ ...snapshot(), bundlesByType });
-      return { bundlesByType };
+      return { ...get().bundlesByType, [typeKey]: next };
+    };
+
+    const update = <K extends keyof ContentStoreState<Tier>>(patch: Pick<ContentStoreState<Tier>, K>) => {
+      set(patch);
+      persist();
     };
 
     return {
       ...read(),
       setAvailable: (typeKey, bundles) =>
-        set(() => {
-          const availableByType = { ...get().availableByType, [typeKey]: bundles };
-          persist({ ...snapshot(), availableByType });
-          return { availableByType };
-        }),
-      installBundle: (typeKey, bundleId) =>
-        set(() => {
-          const bundle = (get().availableByType[typeKey] ?? []).find((b) => b.bundleId === bundleId);
-          return bundle ? upsertInstalled(typeKey, bundle) : {};
-        }),
-      upsertBundle: (typeKey, bundle) => set(() => upsertInstalled(typeKey, bundle)),
-      removeBundle: (typeKey, bundleId) =>
-        set(() => {
-          const next = (get().bundlesByType[typeKey] ?? []).filter((b) => b.bundleId !== bundleId);
-          const bundlesByType = { ...get().bundlesByType, [typeKey]: next };
-          persist({ ...snapshot(), bundlesByType });
-          return { bundlesByType };
-        }),
+        update({ availableByType: { ...get().availableByType, [typeKey]: bundles } }),
+      installBundle: (typeKey, bundleId) => {
+        const bundle = (get().availableByType[typeKey] ?? []).find((b) => b.bundleId === bundleId);
+        if (bundle) update({ bundlesByType: upsertInstalled(typeKey, bundle) });
+      },
+      upsertBundle: (typeKey, bundle) => update({ bundlesByType: upsertInstalled(typeKey, bundle) }),
+      removeBundle: (typeKey, bundleId) => {
+        const next = (get().bundlesByType[typeKey] ?? []).filter((b) => b.bundleId !== bundleId);
+        update({ bundlesByType: { ...get().bundlesByType, [typeKey]: next } });
+      },
       setRevision: (typeKey, revision) =>
-        set(() => {
-          const revisionByType = { ...get().revisionByType, [typeKey]: revision };
-          persist({ ...snapshot(), revisionByType });
-          return { revisionByType };
-        }),
+        update({ revisionByType: { ...get().revisionByType, [typeKey]: revision } }),
       registerRemoteType: (meta) =>
-        set(() => {
-          const remoteTypes = [...get().remoteTypes.filter((t) => t.key !== meta.key), meta];
-          persist({ ...snapshot(), remoteTypes });
-          return { remoteTypes };
-        }),
-      setCatalogRevision: (catalogRevision) =>
-        set(() => {
-          persist({ ...snapshot(), catalogRevision });
-          return { catalogRevision };
-        }),
-      markChecked: (lastCheckedAt) =>
-        set(() => {
-          persist({ ...snapshot(), lastCheckedAt });
-          return { lastCheckedAt };
-        }),
+        update({ remoteTypes: [...get().remoteTypes.filter((t) => t.key !== meta.key), meta] }),
+      setCatalogRevision: (catalogRevision) => update({ catalogRevision }),
+      markChecked: (lastCheckedAt) => update({ lastCheckedAt }),
     };
   });
 }

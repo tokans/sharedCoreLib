@@ -111,11 +111,14 @@ export async function buildBundle(
 ): Promise<SyncBundle> {
   const recipient = compartments?.recipientUserId;
   const bundle: SyncBundle = {};
+  let n = 0;
   for (const s of tables) {
     const rows = await db.select<Record<string, unknown> & { compartment?: string | null }>(
       `SELECT * FROM "${tableName(s).replace(/[^A-Za-z0-9_]/g, "_")}"`,
     );
     bundle[qualifiedName(s)] = recipient === undefined ? rows : rowsForRecipient(rows, recipient);
+    // Yield between tables so dumping many large tables doesn't block the webview.
+    if (++n % 8 === 0) await new Promise((r) => setTimeout(r, 0));
   }
   return bundle;
 }
@@ -139,20 +142,36 @@ export async function applyBundle(
     if (!s) { skipped += rows.length; continue; } // out-of-scope table → never written
     const table = `"${tableName(s).replace(/[^A-Za-z0-9_]/g, "_")}"`;
     const key = pk(s);
+    const keyId = `"${key.replace(/[^A-Za-z0-9_]/g, "_")}"`;
     // Allow-list: only columns DECLARED by this table's descriptor may be written. Column
     // names arrive in an untrusted peer's decrypted bundle (THREAT_MODEL: a paired peer is
     // untrusted), so an unknown/crafted key must never reach the SQL identifier — values are
     // parameterized, but identifiers can't be. Unknown columns are dropped, not written.
     const allowedCols = new Set(s.fields.map((f) => f.dbAlias ?? f.name));
+
+    // Batch-load the local side ONCE per table (LWW only needs updated_at), keyed by pk —
+    // instead of one SELECT per incoming row (an N+1 that serialized N IPC round-trips and
+    // froze sync on real data). Chunked to stay under SQLite's bound-variable limit.
+    const localUpdatedAt = new Map<unknown, unknown>();
+    const ids = rows.map((r) => r[key]).filter((v) => v != null);
+    for (let i = 0; i < ids.length; i += 500) {
+      const chunk = ids.slice(i, i + 500);
+      const localRows = await db.select<Record<string, unknown>>(
+        `SELECT ${keyId}, "updated_at" FROM ${table} WHERE ${keyId} IN (${chunk.map(() => "?").join(", ")})`,
+        chunk,
+      );
+      for (const lr of localRows) localUpdatedAt.set(lr[key], lr.updated_at);
+    }
+
+    let n = 0;
     for (const row of rows) {
       // Receive-side compartment guard (K0.4.4): never write another member's private row.
       if (localUser !== undefined && !canAccessCompartment(compartmentOf(row as { compartment?: string | null }), localUser)) {
         skipped++;
         continue;
       }
-      const localRows = await db.select<Record<string, unknown>>(`SELECT * FROM ${table} WHERE "${key}" = ?`, [row[key]]);
-      const local = localRows[0];
-      if (local && !isNewer(row.updated_at, local.updated_at, String(row.device_id ?? ""), localDeviceId)) { skipped++; continue; }
+      const hasLocal = localUpdatedAt.has(row[key]);
+      if (hasLocal && !isNewer(row.updated_at, localUpdatedAt.get(row[key]), String(row.device_id ?? ""), localDeviceId)) { skipped++; continue; }
       const cols = Object.keys(row).filter((c) => allowedCols.has(c));
       if (!cols.length) { skipped++; continue; } // nothing recognized to write
       await db.execute(
@@ -160,6 +179,8 @@ export async function applyBundle(
         cols.map((c) => row[c]),
       );
       applied++;
+      // Yield periodically so a large merge doesn't starve the webview's paint/input.
+      if (++n % 250 === 0) await new Promise((r) => setTimeout(r, 0));
     }
   }
   return { applied, skipped };

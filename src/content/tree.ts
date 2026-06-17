@@ -185,8 +185,7 @@ export function buildContentTree(files: RawFile[], opts: BuildTreeOptions = {}):
   }
 
   const finalize = (node: MutableNode): ContentNode => {
-    const children = [...node.children.values()].map(finalize);
-    children.sort((a, b) => nodeOrder(a) - nodeOrder(b) || nodeLabel(a).localeCompare(nodeLabel(b)));
+    const children = sortNodes([...node.children.values()].map(finalize));
     return {
       key: node.key,
       path: node.path,
@@ -224,8 +223,7 @@ export function buildNodeTree(def: NodeDef, opts: { path?: string[] } = {}): Con
   const properties: Record<string, PropertyValue> = { ...(def.properties ?? {}) };
   if (def.label != null) properties.label = { kind: "text", value: def.label };
   if (def.order != null) properties.order = { kind: "text", value: String(def.order) };
-  const children = (def.children ?? []).map((c) => buildNodeTree(c, { path: [...path, c.key] }));
-  children.sort((a, b) => nodeOrder(a) - nodeOrder(b) || nodeLabel(a).localeCompare(nodeLabel(b)));
+  const children = sortNodes((def.children ?? []).map((c) => buildNodeTree(c, { path: [...path, c.key] })));
   return {
     key: def.key,
     path,
@@ -285,6 +283,18 @@ export function nodeOrder(node: ContentNode): number {
 
 function prettify(key: string): string {
   return key.replace(/[-_]+/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+/**
+ * Sort sibling nodes by order then label. Decorate-sort-undecorate: `nodeOrder`/`nodeLabel`
+ * each re-parse properties, so compute them once per node instead of inside the comparator
+ * (which would re-parse O(n log n) times — costly on deep trees).
+ */
+function sortNodes(nodes: ContentNode[]): ContentNode[] {
+  return nodes
+    .map((node) => ({ node, order: nodeOrder(node), label: nodeLabel(node) }))
+    .sort((a, b) => a.order - b.order || a.label.localeCompare(b.label))
+    .map((d) => d.node);
 }
 
 /** Navigate to a descendant node by path segments (undefined if absent). */

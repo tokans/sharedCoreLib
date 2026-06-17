@@ -193,6 +193,7 @@ function ActionRow({ action, onNavigate }: { action: SuiteAction; onNavigate?: (
  */
 function SidebarScrollArea({ children }: { children: React.ReactNode }): React.ReactElement {
   const ref = React.useRef<HTMLDivElement>(null);
+  const inner = React.useRef<HTMLDivElement>(null);
   const [canUp, setCanUp] = React.useState(false);
   const [canDown, setCanDown] = React.useState(false);
 
@@ -208,9 +209,11 @@ function SidebarScrollArea({ children }: { children: React.ReactNode }): React.R
     const el = ref.current;
     if (!el) return;
     // Re-evaluate when the viewport, the scroll region, or its contents change size.
+    // Observe just the container + the single content wrapper (not every nav child) —
+    // one observation catches content growth without an N-item observer fan-out.
     const ro = new ResizeObserver(update);
     ro.observe(el);
-    for (const child of Array.from(el.children)) ro.observe(child);
+    if (inner.current) ro.observe(inner.current);
     window.addEventListener("resize", update);
     return () => {
       ro.disconnect();
@@ -242,7 +245,7 @@ function SidebarScrollArea({ children }: { children: React.ReactNode }): React.R
         onScroll={update}
         className="h-full overflow-y-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
       >
-        {children}
+        <div ref={inner}>{children}</div>
       </div>
       {canDown && (
         <button
@@ -266,7 +269,9 @@ export function SuiteShell(props: SuiteShellProps): React.ReactElement {
   } = props;
 
   // Suite-standard chrome first (same icon/label/order in every app), then the app's own actions.
-  const allActions: SuiteAction[] = [
+  // Memoized so the shell (re-rendered on every navigation + drawer toggle) doesn't rebuild
+  // these arrays/Set each render.
+  const allActions = React.useMemo<SuiteAction[]>(() => [
     ...(moreAppsTo
       ? [{ key: "suite:more-apps", label: "More Apps", icon: LayoutGrid, to: moreAppsTo }]
       : []),
@@ -274,18 +279,24 @@ export function SuiteShell(props: SuiteShellProps): React.ReactElement {
       ? [{ key: "suite:report-issue", label: "Report an issue", icon: Bug, onSelect: onReportIssue }]
       : []),
     ...actions,
-  ];
+  ], [moreAppsTo, onReportIssue, actions]);
 
   const [moreOpen, setMoreOpen] = React.useState(false);
   const [centralOpen, setCentralOpen] = React.useState(false);
   const { pathname } = useLocation();
 
-  const homeItem = nav.find((it) => it.home) ?? nav[0];
+  const homeItem = React.useMemo(() => nav.find((it) => it.home) ?? nav[0], [nav]);
   // The mobile More list = nav minus the home tab and minus any destination already reachable
   // as a central-action button (so it isn't listed twice on mobile). The desktop sidebar still
   // shows the full nav.
-  const centralRoutes = new Set(centralActions.map((a) => a.to).filter(Boolean));
-  const moreItems = nav.filter((it) => it !== homeItem && !centralRoutes.has(it.to));
+  const centralRoutes = React.useMemo(
+    () => new Set(centralActions.map((a) => a.to).filter(Boolean)),
+    [centralActions],
+  );
+  const moreItems = React.useMemo(
+    () => nav.filter((it) => it !== homeItem && !centralRoutes.has(it.to)),
+    [nav, homeItem, centralRoutes],
+  );
   const moreActive = moreItems.some((it) => it.to === pathname);
 
   const CenterIcon = centralIcon ?? Plus;

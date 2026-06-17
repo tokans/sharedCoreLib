@@ -439,6 +439,26 @@ export interface AppCatalogConfig {
   platform?: () => string | undefined;
   /** The user's suite entitlements (from grant state) — gates Patron/Partner-only apps. Default: none. */
   entitlements?: () => Promise<Entitlements>;
+  /**
+   * Opt-in allow-list of https hostnames for feed-supplied URLs (download/marketing/enroll
+   * links). A compromised registry feed is a phishing/malware channel (THREAT_MODEL §7); when
+   * set, every URL is origin-checked before it reaches `openExternal` (a host matches itself or
+   * any subdomain). When unset, URLs pass through as before (the app owns the policy). Apps
+   * SHOULD set this, e.g. `["tokans.org", "github.io", "github.com"]`.
+   */
+  allowedUrlHosts?: string[];
+}
+
+/** True only for an https URL whose host equals, or is a subdomain of, an allow-listed host. */
+function isAllowedUrl(url: string, hosts: string[]): boolean {
+  try {
+    const u = new URL(url);
+    if (u.protocol !== "https:") return false;
+    const host = u.hostname.toLowerCase();
+    return hosts.some((h) => host === h || host.endsWith(`.${h}`));
+  } catch {
+    return false;
+  }
 }
 
 export interface AppCatalog {
@@ -473,6 +493,14 @@ export function createAppCatalog(cfg: AppCatalogConfig): AppCatalog {
   const getEntitlements = async (): Promise<Entitlements> =>
     cfg.entitlements ? await cfg.entitlements() : NO_ENTITLEMENTS;
 
+  // Origin-check every feed-supplied URL before handing it to the OS browser (opt-in).
+  const openExternal = async (url: string): Promise<void> => {
+    if (cfg.allowedUrlHosts && !isAllowedUrl(url, cfg.allowedUrlHosts)) {
+      throw new Error(`blocked URL with non-allow-listed origin: ${url}`);
+    }
+    await cfg.openExternal(url);
+  };
+
   async function entries(): Promise<AppCatalogEntry[]> {
     const [apps, ent] = await Promise.all([cfg.listPublishedApps(), getEntitlements()]);
     const rows: AppCatalogEntry[] = [];
@@ -496,11 +524,11 @@ export function createAppCatalog(cfg: AppCatalogConfig): AppCatalog {
   const install = async (appId: string): Promise<void> => {
     const url = pickDownloadLink(await findApp(appId), platform());
     if (!url) throw new Error(`no download link for ${appId}`);
-    await cfg.openExternal(url);
+    await openExternal(url);
   };
   const enroll = async (appId: string): Promise<void> => {
     const app = await findApp(appId);
-    await cfg.openExternal(app.enrollUrl ?? app.marketingUrl);
+    await openExternal(app.enrollUrl ?? app.marketingUrl);
   };
 
   return {
@@ -518,7 +546,7 @@ export function createAppCatalog(cfg: AppCatalogConfig): AppCatalog {
     open,
     install,
     enroll,
-    openMarketing: async (appId) => cfg.openExternal((await findApp(appId)).marketingUrl),
+    openMarketing: async (appId) => openExternal((await findApp(appId)).marketingUrl),
     markUninstalled: async (appId) => {
       const local = await cfg.getLocalState(appId);
       await cfg.setLocalState(appId, { ...local, installed: false, installedVersion: undefined });

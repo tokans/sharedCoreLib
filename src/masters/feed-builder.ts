@@ -19,7 +19,8 @@
  * tree-shaken out of every app bundle. The output is byte-for-byte verifiable by
  * {@link verifyAndDecryptManifest}, which is exactly what the feed-builder test asserts.
  */
-import { sha256Hex, type BaseManifest } from "./index.js";
+import { sha256Hex } from "./hash.js";
+import type { BaseManifest } from "./index.js";
 
 /** A single master payload to publish. `payload` is JSON-serialized then encrypted. */
 export interface MasterFeedEntryInput {

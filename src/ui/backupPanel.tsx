@@ -16,7 +16,8 @@
  */
 import React from "react";
 import { cn } from "./cn.js";
-import { isEncryptedWorkbook, type ExcelBackup, type ExportReport, type ImportReport } from "../backup/index.js";
+import { isEncryptedWorkbook } from "../backup/detect.js";
+import type { ExcelBackup, ExportReport, ImportReport } from "../backup/index.js";
 
 export interface BackupPanelProps {
   backup: ExcelBackup;
