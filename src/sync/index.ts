@@ -139,6 +139,11 @@ export async function applyBundle(
     if (!s) { skipped += rows.length; continue; } // out-of-scope table → never written
     const table = `"${tableName(s).replace(/[^A-Za-z0-9_]/g, "_")}"`;
     const key = pk(s);
+    // Allow-list: only columns DECLARED by this table's descriptor may be written. Column
+    // names arrive in an untrusted peer's decrypted bundle (THREAT_MODEL: a paired peer is
+    // untrusted), so an unknown/crafted key must never reach the SQL identifier — values are
+    // parameterized, but identifiers can't be. Unknown columns are dropped, not written.
+    const allowedCols = new Set(s.fields.map((f) => f.dbAlias ?? f.name));
     for (const row of rows) {
       // Receive-side compartment guard (K0.4.4): never write another member's private row.
       if (localUser !== undefined && !canAccessCompartment(compartmentOf(row as { compartment?: string | null }), localUser)) {
@@ -148,9 +153,10 @@ export async function applyBundle(
       const localRows = await db.select<Record<string, unknown>>(`SELECT * FROM ${table} WHERE "${key}" = ?`, [row[key]]);
       const local = localRows[0];
       if (local && !isNewer(row.updated_at, local.updated_at, String(row.device_id ?? ""), localDeviceId)) { skipped++; continue; }
-      const cols = Object.keys(row);
+      const cols = Object.keys(row).filter((c) => allowedCols.has(c));
+      if (!cols.length) { skipped++; continue; } // nothing recognized to write
       await db.execute(
-        `INSERT OR REPLACE INTO ${table} (${cols.map((c) => `"${c}"`).join(", ")}) VALUES (${cols.map(() => "?").join(", ")})`,
+        `INSERT OR REPLACE INTO ${table} (${cols.map((c) => `"${c.replace(/[^A-Za-z0-9_]/g, "_")}"`).join(", ")}) VALUES (${cols.map(() => "?").join(", ")})`,
         cols.map((c) => row[c]),
       );
       applied++;
