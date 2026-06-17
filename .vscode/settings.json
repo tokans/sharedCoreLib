@@ -1,0 +1,7 @@
+{
+  // Use the workspace TypeScript (5.9.3) so the editor matches `npm run build`.
+  // The older TS that VS Code bundles can't parse the `with { type: "json" }`
+  // import attributes in src/masters/common.ts and reports phantom errors.
+  "typescript.tsdk": "node_modules/typescript/lib",
+  "typescript.enablePromptUseWorkspaceTsdk": true
+}
