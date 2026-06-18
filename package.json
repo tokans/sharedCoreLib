@@ -124,6 +124,10 @@
       "require": "./tailwind/preset.cjs",
       "default": "./tailwind/preset.cjs"
     },
+    "./vite": {
+      "types": "./vite/backup-polyfills.d.mts",
+      "import": "./vite/backup-polyfills.mjs"
+    },
     "./ui/theme.css": "./src/ui/theme.css"
   },
   "scripts": {
@@ -199,6 +203,7 @@
   },
   "dependencies": {
     "officecrypto-tool": "0.0.19",
+    "vite-plugin-node-polyfills": "^0.28.0",
     "xlsx": "https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz"
   }
 }
