@@ -151,14 +151,33 @@ every app across desktop and mobile. It owns the chrome; the app supplies **data
   the shell never imports app gating — compute it from your gating store and omit hidden items.
 - **`centralActions: SuiteAction[]`** — the mobile center button is **adaptive**: 0 actions → no
   center button; 1 → a plain button that runs it; 2+ → a raised FAB that opens a bottom sheet.
+- **`centralVariant?: "sheet" | "arch"`** (default `"sheet"`) — how 2+ `centralActions` present on
+  mobile. `"sheet"` (the default, unchanged) opens a bottom sheet listing the actions. `"arch"` fans
+  the actions out in a **rainbow semicircular arch** of coloured icon petals (scrim + Escape to close;
+  petals are real NavLinks for `to` / buttons for `onSelect`, each with an aria-label; the FAB carries
+  `aria-expanded`). Mobile-only (the whole bottom bar is `md:hidden`); on desktop the same destinations
+  live in the sidebar nav. With 0/1 actions both variants behave identically. Each petal's colour comes
+  from **`SuiteAction.color`** (hex), else a built-in rainbow palette by index — so the arch is always
+  colourful without the app specifying colours. `color` is ignored by the sheet/More/sidebar rows
+  (those use `tone`).
 - **`moreAppsTo?: string`** / **`onReportIssue?: () => void`** — the suite-standard chrome the
   shell renders itself (consistent icon/label/order in every app): a **"More Apps"** link to the
   app's marketplace page (e.g. `"/suite"`) and a **"Report an issue"** trigger (each app supplies
   its own destination — a dialog, a prefilled GitHub URL, …). Rendered ahead of `actions` in both
   the More drawer and the desktop sidebar footer; omitted when the prop is unset.
-- **`actions: SuiteAction[]`** — the app's own secondary actions (settings / donate / emergency …),
+- **`actions: SuiteAction[]`** — the app's own secondary actions (settings / emergency …),
   rendered after the standard chrome in both the More drawer and the desktop sidebar footer.
   `moreExtra` / `moreHeader` / `sidebarTop` inject app-specific content (e.g. a tier badge).
+- **`support?: SuiteSupport`** — the suite-standard **support call-to-action**, resolved and rendered
+  by the shell so the donate→partner state machine is identical in every app. The app passes only its
+  donation state + the openers; the shell resolves, in order: `isPartner`/`hidden` ⇒ no CTA; `pending`
+  (donated, grant not imported) ⇒ **"Restart after donation"** (`onRestart`); `isSupporter` + offer
+  open ⇒ **"Become a Partner"** (`onPartner`); `isSupporter` + `partnerOfferActive===false` ⇒
+  **"Reopen Partner signup"** (`onReopen`); otherwise ⇒ **"Donate to support"** (`onDonate`).
+  `onReopen`/`onRestart` fall back to `onDonate`; `labels?: {donate,partner,reopen,restart}` override
+  terminology per app (e.g. myFinance's "Become a Patron"). Rendered last in the footer / More drawer;
+  the pure resolver is exported as **`supportCta(support)`**. Donating only accelerates the free
+  ladder — it never paywalls the safety floor (invariants 3 & 4).
 - **`profile`** — the injected top-right slot (app-owned; e.g. myHealth's family-profile button +
   drawer). Keeps the shell free of login/multi-user semantics — **free apps stay login-less**.
 - **`account?: { tier, … }`** — the OPTIONAL built-in account button, rendered **only at tier ≥ 2**.
