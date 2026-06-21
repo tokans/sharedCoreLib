@@ -719,11 +719,22 @@ export function createSuiteCatalog(opts: SuiteCatalogOptions): AppCatalog {
   const launchApp =
     opts.launchApp ??
     (async (app: PublishedApp) => {
-      try {
-        await opts.openExternal(`${app.appId}://open`);
-      } catch {
-        await opts.openExternal(app.marketingUrl);
+      // Try the app's own deep-link scheme first. This URL is APP-constructed (not user
+      // input), so it must NOT go through `openExternal` — that helper fails closed on
+      // anything outside https/tel/mailto (to drop untrusted javascript:/data: links) and
+      // would silently swallow `appId://open`, launching nothing and skipping the fallback.
+      // Open it via the raw opener; on any failure (scheme not registered / not installed),
+      // fall back to the marketing page through the guarded opener.
+      if (isTauri()) {
+        try {
+          const { openUrl } = await import("@tauri-apps/plugin-opener");
+          await openUrl(`${app.appId}://open`);
+          return;
+        } catch {
+          /* no handler registered for the scheme — fall through to marketing */
+        }
       }
+      await opts.openExternal(app.marketingUrl);
     });
   return createAppCatalog({
     currentAppId: opts.appId,
