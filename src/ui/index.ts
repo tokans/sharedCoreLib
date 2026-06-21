@@ -37,8 +37,18 @@ export {
 // Primitive UI kit (Tailwind-styled — requires the §4.2 preset + theme.css + content glob).
 export { Sheet, SheetClose, SheetContent, type SheetSide, type SheetContentProps } from "./sheet.js";
 export { BackupPanel, type BackupPanelProps } from "./backupPanel.js";
+export { Button, type ButtonProps, type ButtonVariant, type ButtonSize } from "./button.js";
+export { MetricCard, type MetricCardProps } from "./metricCard.js";
 export {
   SuiteShell, supportCta,
   type SuiteShellProps, type SuiteNavItem, type SuiteAction, type SuiteAccount,
   type SuiteSupport, type SuiteUserSwitch, type SuiteUserSwitchMember,
 } from "./suiteShell.js";
+
+// Dev/test tier override — the floating chooser + its browser plumbing (the pure resolver lives
+// in `sharedcorelib/tiers`). Reusable across apps; renders nothing outside dev (see allowed()).
+export {
+  createTierOverride,
+  type TierOverride, type TierOverrideConfig, type TierOverrideEnv,
+} from "./tierOverride.js";
+export { TestTierChooser, type TestTierChooserProps, type TestTierOption } from "./testTierChooser.js";

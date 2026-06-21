@@ -115,6 +115,37 @@ export function hasPatronAccess(ctx: PatronPartnerCtx): boolean {
   return ctx.isPatron || ctx.isPartner;
 }
 
+// ── Dev/test tier override (pure) ─────────────────────────────────────────────
+//
+// A DEV-ONLY mechanism to preview a tier without meeting its real criteria, shared by
+// every app (myMemories/myHealth/… each re-implemented it). The PURE resolver lives here;
+// the browser plumbing (`createTierOverride`) + the floating `TestTierChooser` UI live in
+// `sharedcorelib/ui` (so they sit under the already-scanned Tailwind content glob). The
+// override is purely a CLIENT-SIDE preview: it grants NO real entitlement and mints nothing.
+
+/** Override values meaning "no override" (clear the preview). */
+const TIER_OVERRIDE_CLEAR = new Set(["", "clear", "off", "none", "live"]);
+
+/**
+ * Resolve a dev tier override from its sources, first valid wins: an explicit URL `?tier=`
+ * value, then the persisted value, then a build-time start tier. Returns null when nothing
+ * valid is set or the value is a clear sentinel. Pure — sources are injected (no `window`,
+ * no `import.meta`), so it's unit-testable and SSR-safe. Matching is case-insensitive.
+ */
+export function resolveTierOverride(
+  sources: { urlTier?: string | null; stored?: string | null; startTier?: string | null },
+  validKeys: readonly string[],
+): string | null {
+  for (const raw of [sources.urlTier, sources.stored, sources.startTier]) {
+    if (raw == null) continue;
+    const v = raw.trim().toLowerCase();
+    if (TIER_OVERRIDE_CLEAR.has(v)) return null;
+    const match = validKeys.find((k) => k.toLowerCase() === v);
+    if (match) return match;
+  }
+  return null;
+}
+
 /**
  * Whether to surface the **"Become a Patron"** call-to-action: visible once the user
  * has reached the SECOND earned (non-grant) tier of the ladder. Returns false if the

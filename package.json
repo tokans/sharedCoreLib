@@ -151,6 +151,7 @@
     "@tauri-apps/plugin-fs": "^2.0.2",
     "@tauri-apps/plugin-http": "^2.0.0",
     "@tauri-apps/plugin-notification": "^2.3.3",
+    "@tauri-apps/plugin-opener": "^2.2.0",
     "@tauri-apps/plugin-os": "^2.0.0",
     "@tauri-apps/plugin-stronghold": "^2.0.0",
     "clsx": "^2.1.1",
@@ -165,6 +166,9 @@
   },
   "peerDependenciesMeta": {
     "@tauri-apps/plugin-notification": {
+      "optional": true
+    },
+    "@tauri-apps/plugin-opener": {
       "optional": true
     },
     "@tauri-apps/api": {
@@ -190,6 +194,7 @@
     "@tauri-apps/plugin-fs": "^2.0.2",
     "@tauri-apps/plugin-http": "^2.0.0",
     "@tauri-apps/plugin-notification": "^2.3.3",
+    "@tauri-apps/plugin-opener": "^2.2.0",
     "@tauri-apps/plugin-os": "^2.0.0",
     "@tauri-apps/plugin-stronghold": "^2.0.0",
     "@types/node": "^22.9.0",

@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import {
-  standardTopTiers, hasPatronAccess, becomePatronVisible, resolveTier,
+  standardTopTiers, hasPatronAccess, becomePatronVisible, resolveTier, resolveTierOverride,
   type TierDef, type PatronPartnerCtx,
 } from "./index.js";
 
@@ -37,5 +37,26 @@ describe("standard top tiers (Patron / Partner)", () => {
     expect(becomePatronVisible(ladder, ctx({ days: 0 }))).toBe(false); // only Newcomer reached
     expect(becomePatronVisible(ladder, ctx({ days: 7 }))).toBe(true);  // reached Regular (2nd earned)
     expect(becomePatronVisible(ladder, ctx({ days: 7, isPatron: true }))).toBe(false); // already a Patron
+  });
+});
+
+describe("resolveTierOverride (dev/test tier override)", () => {
+  const keys = ["newcomer", "regular", "expert", "patron", "partner"];
+
+  it("picks the first valid source: url → stored → start", () => {
+    expect(resolveTierOverride({ urlTier: "expert", stored: "regular" }, keys)).toBe("expert");
+    expect(resolveTierOverride({ stored: "regular", startTier: "patron" }, keys)).toBe("regular");
+    expect(resolveTierOverride({ startTier: "partner" }, keys)).toBe("partner");
+  });
+
+  it("is case-insensitive and ignores unknown keys", () => {
+    expect(resolveTierOverride({ urlTier: "EXPERT" }, keys)).toBe("expert");
+    expect(resolveTierOverride({ urlTier: "bogus", stored: "regular" }, keys)).toBe("regular");
+  });
+
+  it("treats clear sentinels and absent sources as no override", () => {
+    expect(resolveTierOverride({ urlTier: "clear", stored: "expert" }, keys)).toBeNull();
+    expect(resolveTierOverride({ urlTier: "off" }, keys)).toBeNull();
+    expect(resolveTierOverride({}, keys)).toBeNull();
   });
 });
