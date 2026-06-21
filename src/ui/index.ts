@@ -38,7 +38,7 @@ export {
 export { Sheet, SheetClose, SheetContent, type SheetSide, type SheetContentProps } from "./sheet.js";
 export { BackupPanel, type BackupPanelProps } from "./backupPanel.js";
 export {
-  SuiteShell,
+  SuiteShell, supportCta,
   type SuiteShellProps, type SuiteNavItem, type SuiteAction, type SuiteAccount,
-  type SuiteUserSwitch, type SuiteUserSwitchMember,
+  type SuiteSupport, type SuiteUserSwitch, type SuiteUserSwitchMember,
 } from "./suiteShell.js";

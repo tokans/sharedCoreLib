@@ -25,7 +25,7 @@
  */
 import * as React from "react";
 import { NavLink, useLocation } from "react-router-dom";
-import { Bug, ChevronDown, ChevronUp, LayoutGrid, MoreHorizontal, Plus, type LucideIcon } from "lucide-react";
+import { Bug, ChevronDown, ChevronUp, Handshake, Heart, LayoutGrid, MoreHorizontal, Plus, RotateCw, type LucideIcon } from "lucide-react";
 import { cn } from "./cn.js";
 import { Sheet, SheetContent, SheetClose } from "./sheet.js";
 import { SupportedByTokans } from "./attribution.js";
@@ -54,6 +54,61 @@ export interface SuiteAction {
   onSelect?: () => void;
   /** Visual emphasis. "danger" is for destructive/emergency actions. */
   tone?: "default" | "primary" | "danger";
+  /**
+   * ADDITIVE — petal colour (hex, e.g. "#ef4444") for the `centralVariant="arch"` rainbow FAB only.
+   * Ignored by the sheet/More/sidebar rows (those use `tone`). When omitted, the arch auto-assigns
+   * a colour from a built-in rainbow palette by index, so the arch is always colourful.
+   */
+  color?: string;
+}
+
+/**
+ * The suite-standard support call-to-action (donate → partner). The shell owns the full state
+ * machine so it is identical across apps; the app supplies only its donation state + the openers
+ * (and, where terminology differs, label overrides). Resolution order:
+ *   1. `isPartner` (or `hidden`) ⇒ no CTA (top of the support ladder / suppressed);
+ *   2. `pending` (donated, signed grant not imported yet) ⇒ **"Restart after donation"** → `onRestart`;
+ *   3. `isSupporter` + offer open ⇒ **"Become a Partner"** → `onPartner`;
+ *   4. `isSupporter` + `partnerOfferActive === false` ⇒ **"Reopen Partner signup"** → `onReopen`;
+ *   5. otherwise ⇒ **"Donate to support"** → `onDonate`.
+ */
+export interface SuiteSupport {
+  /** Has the user donated (Supporter / Patron)? When true the CTA flips to the partner ladder. */
+  isSupporter: boolean;
+  /** Already a Partner? When true the CTA is hidden (top of the support ladder). */
+  isPartner?: boolean;
+  /** Donated but the signed grant isn't imported yet — show a "restart / import" CTA. */
+  pending?: boolean;
+  /** Is the time-limited Partner offer currently open? Defaults to open (`true`) when omitted. */
+  partnerOfferActive?: boolean;
+  /** Open the donation flow (shown when not yet a Supporter). */
+  onDonate: () => void;
+  /** Open the partner / professional signup (shown once a Supporter, offer open). */
+  onPartner: () => void;
+  /** Re-open the Partner window via re-donation (Supporter, offer closed). Falls back to `onDonate`. */
+  onReopen?: () => void;
+  /** Import / scan for the grant after donating (pending). Falls back to `onDonate`. */
+  onRestart?: () => void;
+  /** Force-hide the CTA (e.g. until the app's chosen tier threshold is reached). */
+  hidden?: boolean;
+  /** Per-app label overrides — terminology differs ("Donate to support" vs "Become a Patron"). */
+  labels?: { donate?: string; partner?: string; reopen?: string; restart?: string };
+}
+
+/** Resolve the suite-standard support CTA from donation state, or null when none should show. */
+export function supportCta(support: SuiteSupport | undefined): SuiteAction | null {
+  if (!support || support.hidden || support.isPartner) return null;
+  const L = support.labels ?? {};
+  if (!support.isSupporter && support.pending) {
+    return { key: "suite:support-restart", label: L.restart ?? "Restart after donation", icon: RotateCw, onSelect: support.onRestart ?? support.onDonate, tone: "primary" };
+  }
+  if (support.isSupporter) {
+    if (support.partnerOfferActive === false) {
+      return { key: "suite:partner-reopen", label: L.reopen ?? "Reopen Partner signup", icon: Handshake, onSelect: support.onReopen ?? support.onDonate, tone: "primary" };
+    }
+    return { key: "suite:partner", label: L.partner ?? "Become a Partner", icon: Handshake, onSelect: support.onPartner, tone: "primary" };
+  }
+  return { key: "suite:donate", label: L.donate ?? "Donate to support", icon: Heart, onSelect: support.onDonate, tone: "primary" };
 }
 
 /** Optional built-in account button (top-right). Rendered only at tier ≥ 2 — free apps stay login-less. */
@@ -101,6 +156,15 @@ export interface SuiteShellProps {
   /** Center button label/icon (FAB + its accessible label; sheet title). Defaults: "Menu" / Plus. */
   centralLabel?: string;
   centralIcon?: LucideIcon;
+  /**
+   * ADDITIVE — how the 2+ `centralActions` are presented on mobile:
+   *   - `"sheet"` (default) → a raised FAB that opens a bottom sheet listing the actions (unchanged).
+   *   - `"arch"` → a raised FAB that fans the actions out in a **rainbow semicircular arch** of
+   *     coloured icon petals (scrim + Escape to close; petals are real NavLinks/buttons). Each
+   *     petal's colour comes from `SuiteAction.color`, else a built-in rainbow palette by index.
+   * With 0/1 central actions both variants behave identically (hidden / plain button).
+   */
+  centralVariant?: "sheet" | "arch";
 
   /**
    * Route of the app's marketplace page (e.g. "/suite"). When set, the shell renders the
@@ -114,6 +178,17 @@ export interface SuiteShellProps {
   onReportIssue?: () => void;
   /** App-specific secondary actions (donate / emergency …) — shown in More + the sidebar footer. */
   actions?: SuiteAction[];
+  /**
+   * ADDITIVE — the suite-standard **support call-to-action**, rendered by the shell itself so the
+   * donate→partner flip is identical in every app (CONTRACT §4.1). The shell resolves which CTA to
+   * show from the donation state:
+   *   - already a Partner ⇒ no CTA (top of the support ladder);
+   *   - already a Supporter/Patron (donated) ⇒ **"Become a Partner"** (Handshake) → `onPartner`;
+   *   - otherwise ⇒ **"Donate to support"** (Heart) → `onDonate`.
+   * Set `hidden` to suppress it (e.g. until an app's chosen tier threshold). Apps pass the booleans
+   * from their own tier/grant state; the labels, icons, order, and flip live in core.
+   */
+  support?: SuiteSupport;
   /** App-specific extra content appended inside the More drawer (below the actions). */
   moreExtra?: React.ReactNode;
   /** Optional content above the nav inside More (e.g. a tier badge). */
@@ -140,6 +215,142 @@ const TONE_CLASS: Record<NonNullable<SuiteAction["tone"]>, string> = {
   primary: "text-primary hover:bg-primary/10",
   danger: "bg-destructive font-semibold text-destructive-foreground hover:opacity-90",
 };
+
+/**
+ * Built-in rainbow palette for the `centralVariant="arch"` petals — used (by index, cycling) for any
+ * action that omits its own `color`, so the arch is always colourful without the app specifying hues.
+ */
+const ARCH_PALETTE = [
+  "#ef4444", "#f97316", "#f59e0b", "#22c55e", "#3b82f6", "#6366f1", "#8b5cf6", "#ec4899",
+];
+
+/** Radius of the arch (px) and the angular sweep across the upper semicircle (degrees). */
+const ARCH_RADIUS = 128;
+const ARCH_START = 200; // left-ish
+const ARCH_END = 340; // right-ish
+
+/** Polar → screen offset for petal `i` of `n`, along the upper arch (y is negative = upward). */
+function archPetalOffset(i: number, n: number): { x: number; y: number } {
+  const t = n <= 1 ? 0.5 : i / (n - 1);
+  const deg = ARCH_START + t * (ARCH_END - ARCH_START);
+  const rad = (deg * Math.PI) / 180;
+  return { x: Math.cos(rad) * ARCH_RADIUS, y: Math.sin(rad) * ARCH_RADIUS };
+}
+
+/**
+ * The rainbow-arch central FAB (mobile-only; rendered when `centralVariant="arch"` and there are 2+
+ * `centralActions`). Tapping the FAB fans the actions out in a coloured semicircular arch of icon
+ * petals; the scrim or Escape closes it. Petals are real NavLinks (`to`) or buttons (`onSelect`)
+ * with aria-labels; the FAB carries `aria-expanded`. A faithful port of myHome's QuickFab geometry.
+ */
+function CentralArch({
+  actions, label, icon: CenterIcon,
+}: { actions: SuiteAction[]; label: string; icon: LucideIcon }): React.ReactElement {
+  const [open, setOpen] = React.useState(false);
+  const { pathname } = useLocation();
+
+  // Close on route change (a petal navigated) and on Escape.
+  React.useEffect(() => setOpen(false), [pathname]);
+  React.useEffect(() => {
+    if (!open) return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setOpen(false); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [open]);
+
+  const petalInner = (a: SuiteAction, i: number) => {
+    const Icon = a.icon;
+    return (
+      <>
+        <span
+          className="flex h-12 w-12 items-center justify-center rounded-full text-white shadow-lg ring-2 ring-white/70 transition-transform group-hover:scale-110 group-focus-visible:scale-110 dark:ring-white/30"
+          style={{ backgroundColor: a.color ?? ARCH_PALETTE[i % ARCH_PALETTE.length] }}
+        >
+          <Icon className="h-5 w-5" />
+        </span>
+        <span className="mt-1 max-w-[5.5rem] rounded-full bg-card/95 px-2 py-0.5 text-center text-[10px] font-medium leading-tight text-foreground shadow-sm">
+          {a.label}
+        </span>
+      </>
+    );
+  };
+
+  return (
+    <>
+      {/* Scrim — closes the fan; fades in only while open. */}
+      <button
+        type="button"
+        aria-hidden={!open}
+        tabIndex={-1}
+        onClick={() => setOpen(false)}
+        className={cn(
+          "fixed inset-0 z-30 bg-foreground/20 backdrop-blur-[1px] transition-opacity duration-200 md:hidden",
+          open ? "opacity-100" : "pointer-events-none opacity-0",
+        )}
+      />
+
+      {/* Anchor for the FAB + the arch of petals. */}
+      <div className="pointer-events-none fixed inset-x-0 bottom-3 z-40 flex justify-center md:hidden">
+        <div className="pointer-events-auto relative">
+          {/* Petals — absolutely centred on the FAB, translated out along the arch. */}
+          {actions.map((a, i) => {
+            const { x, y } = archPetalOffset(i, actions.length);
+            const style: React.CSSProperties = {
+              transform: open
+                ? `translate(calc(-50% + ${x}px), calc(-50% + ${y}px))`
+                : "translate(-50%, -50%) scale(0.4)",
+              opacity: open ? 1 : 0,
+              pointerEvents: open ? "auto" : "none",
+              transition: "transform 320ms cubic-bezier(0.34,1.56,0.64,1), opacity 200ms ease",
+              transitionDelay: open ? `${i * 35}ms` : `${(actions.length - i) * 20}ms`,
+            };
+            const cls = "group absolute left-1/2 top-1/2 flex -translate-x-1/2 -translate-y-1/2 flex-col items-center";
+            return a.to ? (
+              <NavLink
+                key={a.key}
+                to={a.to}
+                aria-label={a.label}
+                title={a.label}
+                tabIndex={open ? 0 : -1}
+                className={cls}
+                style={style}
+              >
+                {petalInner(a, i)}
+              </NavLink>
+            ) : (
+              <button
+                key={a.key}
+                type="button"
+                aria-label={a.label}
+                title={a.label}
+                tabIndex={open ? 0 : -1}
+                onClick={() => { setOpen(false); a.onSelect?.(); }}
+                className={cls}
+                style={style}
+              >
+                {petalInner(a, i)}
+              </button>
+            );
+          })}
+
+          {/* The FAB itself. */}
+          <button
+            type="button"
+            aria-label={label}
+            aria-expanded={open}
+            onClick={() => setOpen((v) => !v)}
+            className="relative flex h-14 w-14 items-center justify-center rounded-full bg-primary text-primary-foreground shadow-xl ring-4 ring-background transition-transform active:scale-95"
+          >
+            <CenterIcon
+              className="h-7 w-7 transition-transform duration-300"
+              style={{ transform: open ? "rotate(135deg)" : "rotate(0deg)" }}
+            />
+          </button>
+        </div>
+      </div>
+    </>
+  );
+}
 
 function navLinkClass(state: SuiteNavItem["state"]) {
   return ({ isActive }: { isActive: boolean }) =>
@@ -264,22 +475,28 @@ function SidebarScrollArea({ children }: { children: React.ReactNode }): React.R
 export function SuiteShell(props: SuiteShellProps): React.ReactElement {
   const {
     brand, nav, children, centralActions = [], centralLabel = "Menu", centralIcon,
-    moreAppsTo, onReportIssue, actions = [], moreExtra, moreHeader, sidebarTop, profile, account, userSwitch,
+    centralVariant = "sheet",
+    moreAppsTo, onReportIssue, actions = [], support, moreExtra, moreHeader, sidebarTop, profile, account, userSwitch,
     onExternal, contentClassName,
   } = props;
 
-  // Suite-standard chrome first (same icon/label/order in every app), then the app's own actions.
-  // Memoized so the shell (re-rendered on every navigation + drawer toggle) doesn't rebuild
-  // these arrays/Set each render.
-  const allActions = React.useMemo<SuiteAction[]>(() => [
-    ...(moreAppsTo
-      ? [{ key: "suite:more-apps", label: "More Apps", icon: LayoutGrid, to: moreAppsTo }]
-      : []),
-    ...(onReportIssue
-      ? [{ key: "suite:report-issue", label: "Report an issue", icon: Bug, onSelect: onReportIssue }]
-      : []),
-    ...actions,
-  ], [moreAppsTo, onReportIssue, actions]);
+  // Suite-standard chrome first (same icon/label/order in every app), then the app's own actions,
+  // then the suite-standard support CTA (donate → partner, resolved in core so it's identical
+  // everywhere). Memoized so the shell (re-rendered on every navigation + drawer toggle) doesn't
+  // rebuild these arrays/Set each render.
+  const allActions = React.useMemo<SuiteAction[]>(() => {
+    const supportAction = supportCta(support);
+    return [
+      ...(moreAppsTo
+        ? [{ key: "suite:more-apps", label: "More Apps", icon: LayoutGrid, to: moreAppsTo }]
+        : []),
+      ...(onReportIssue
+        ? [{ key: "suite:report-issue", label: "Report an issue", icon: Bug, onSelect: onReportIssue }]
+        : []),
+      ...actions,
+      ...(supportAction ? [supportAction] : []),
+    ];
+  }, [moreAppsTo, onReportIssue, actions, support]);
 
   const [moreOpen, setMoreOpen] = React.useState(false);
   const [centralOpen, setCentralOpen] = React.useState(false);
@@ -300,6 +517,10 @@ export function SuiteShell(props: SuiteShellProps): React.ReactElement {
   const moreActive = moreItems.some((it) => it.to === pathname);
 
   const CenterIcon = centralIcon ?? Plus;
+  // The rainbow arch is an opt-in central variant: it renders its own overlay FAB + petals, so when
+  // active (2+ actions) the bottom-bar keeps a 2-slot layout (home · More) and the central sheet is
+  // not used. The default "sheet" variant is byte-identical to before.
+  const useArch = centralVariant === "arch" && centralActions.length > 1;
   const attribution = (
     <SupportedByTokans
       onActivate={onExternal}
@@ -452,7 +673,7 @@ export function SuiteShell(props: SuiteShellProps): React.ReactElement {
               </button>
             );
           })()
-        ) : centralActions.length > 1 ? (
+        ) : centralActions.length > 1 && !useArch ? (
           <button
             type="button"
             onClick={fireCentral}
@@ -523,20 +744,25 @@ export function SuiteShell(props: SuiteShellProps): React.ReactElement {
         </SheetContent>
       </Sheet>
 
-      {/* Central bottom sheet (only used when there are 2+ central actions) */}
-      <Sheet open={centralOpen} onOpenChange={setCentralOpen}>
-        <SheetContent side="bottom" title={centralLabel}>
-          <div className="flex flex-col gap-1 px-2 pb-3">
-            {centralActions.map((a) => (
-              <SheetClose asChild key={a.key}>
-                <div>
-                  <ActionRow action={a} onNavigate={() => setCentralOpen(false)} />
-                </div>
-              </SheetClose>
-            ))}
-          </div>
-        </SheetContent>
-      </Sheet>
+      {/* Central bottom sheet (default "sheet" variant only, with 2+ central actions) */}
+      {!useArch && (
+        <Sheet open={centralOpen} onOpenChange={setCentralOpen}>
+          <SheetContent side="bottom" title={centralLabel}>
+            <div className="flex flex-col gap-1 px-2 pb-3">
+              {centralActions.map((a) => (
+                <SheetClose asChild key={a.key}>
+                  <div>
+                    <ActionRow action={a} onNavigate={() => setCentralOpen(false)} />
+                  </div>
+                </SheetClose>
+              ))}
+            </div>
+          </SheetContent>
+        </Sheet>
+      )}
+
+      {/* Central rainbow arch (opt-in "arch" variant only, with 2+ central actions) */}
+      {useArch && <CentralArch actions={centralActions} label={centralLabel} icon={CenterIcon} />}
     </div>
   );
 }

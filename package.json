@@ -128,6 +128,10 @@
       "types": "./vite/backup-polyfills.d.mts",
       "import": "./vite/backup-polyfills.mjs"
     },
+    "./vite/dev-server": {
+      "types": "./vite/dev-server.d.mts",
+      "import": "./vite/dev-server.mjs"
+    },
     "./ui/theme.css": "./src/ui/theme.css"
   },
   "scripts": {
