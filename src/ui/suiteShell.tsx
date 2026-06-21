@@ -289,8 +289,8 @@ function CentralArch({
         )}
       />
 
-      {/* Anchor for the FAB + the arch of petals. */}
-      <div className="pointer-events-none fixed inset-x-0 bottom-3 z-40 flex justify-center md:hidden">
+      {/* Anchor for the FAB + the arch of petals. Lift above the home indicator. */}
+      <div className="pointer-events-none fixed inset-x-0 bottom-[calc(0.75rem_+_var(--safe-bottom,env(safe-area-inset-bottom)))] z-40 flex justify-center md:hidden">
         <div className="pointer-events-auto relative">
           {/* Petals — absolutely centred on the FAB, translated out along the arch. */}
           {actions.map((a, i) => {
@@ -611,8 +611,9 @@ export function SuiteShell(props: SuiteShellProps): React.ReactElement {
 
       {/* Main column */}
       <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-        {/* Top bar: brand (mobile only) left, profile/account right (both viewports). */}
-        <header className="flex items-center justify-between border-b bg-card px-4 py-3">
+        {/* Top bar: brand (mobile only) left, profile/account right (both viewports).
+            Pads for the notch/status bar (top) and a landscape notch (left/right). */}
+        <header className="flex items-center justify-between border-b bg-card pb-3 pl-[calc(1rem_+_var(--safe-left,env(safe-area-inset-left)))] pr-[calc(1rem_+_var(--safe-right,env(safe-area-inset-right)))] pt-[calc(0.75rem_+_var(--safe-top,env(safe-area-inset-top)))]">
           <div className="flex items-center gap-2 font-semibold md:invisible">{brand}</div>
           <div className="flex items-center gap-2">
             {userSwitchEl}
@@ -621,13 +622,13 @@ export function SuiteShell(props: SuiteShellProps): React.ReactElement {
           </div>
         </header>
 
-        <main className="min-h-0 flex-1 overflow-y-auto px-4 py-6 pb-24 md:px-8 md:pb-8">
+        <main className="min-h-0 flex-1 overflow-y-auto py-6 pl-[calc(1rem_+_var(--safe-left,env(safe-area-inset-left)))] pr-[calc(1rem_+_var(--safe-right,env(safe-area-inset-right)))] pb-[calc(6rem_+_var(--safe-bottom,env(safe-area-inset-bottom)))] md:px-8 md:pb-8">
           <div className={cn("w-full", contentClassName)}>{children}</div>
         </main>
       </div>
 
       {/* Mobile bottom bar: [home] · [center] · [More] */}
-      <nav className="fixed inset-x-0 bottom-0 z-10 flex items-stretch justify-around border-t bg-card pb-[var(--safe-bottom,env(safe-area-inset-bottom))] md:hidden">
+      <nav className="fixed inset-x-0 bottom-0 z-10 flex items-stretch justify-around border-t bg-card pb-[var(--safe-bottom,env(safe-area-inset-bottom))] pl-[env(safe-area-inset-left)] pr-[env(safe-area-inset-right)] md:hidden">
         {homeItem && (
           <NavLink
             to={homeItem.to}
