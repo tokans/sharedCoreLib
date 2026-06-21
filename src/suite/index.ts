@@ -23,6 +23,7 @@
  * no direct Tauri import here — so the engine is pure and testable.
  */
 import { verifyManifestSignature, sha256Hex, decryptTransport, meetsMinVersion } from "../masters/index.js";
+import { isTauri } from "../env/index.js";
 
 // ── Trust anchor (baked) ─────────────────────────────────────────────────────
 
@@ -556,4 +557,273 @@ export function createAppCatalog(cfg: AppCatalogConfig): AppCatalog {
       await cfg.setLocalState(appId, { ...local, phoneSyncEnabled: enabled });
     },
   };
+}
+
+// ── Marketplace wiring helpers (dedup: byte-identical glue across every app) ──
+//
+// Every suite app shipped the same four files to wire `createAppCatalog`: a UA→platform
+// string, a Tauri app-version read, a localStorage-backed local-state adapter, and the
+// registry source + catalog factory. They differed only by an app id (and an inconsistent
+// localStorage key prefix). Promoted here as pure/DI helpers parameterized by what varies.
+
+/**
+ * Active platform for download-link selection, derived from the webview user-agent (no
+ * plugin needed). Android reports "Linux" in its UA, so it is checked first. Returns
+ * undefined when unknown — callers fall back to the first available link.
+ */
+export function detectPlatform(): string | undefined {
+  if (typeof navigator === "undefined") return undefined;
+  const ua = navigator.userAgent || "";
+  if (/Android/i.test(ua)) return "android";
+  if (/iPhone|iPad|iPod/i.test(ua)) return "ios";
+  if (/Windows/i.test(ua)) return "windows";
+  if (/Mac OS X|Macintosh/i.test(ua)) return "macos";
+  if (/Linux|X11/i.test(ua)) return "linux";
+  return undefined;
+}
+
+/** This app's installed version, read from the Tauri shell (undefined in browser dev). */
+export async function currentAppVersion(): Promise<string | undefined> {
+  try {
+    const { getVersion } = await import("@tauri-apps/api/app");
+    return await getVersion();
+  } catch {
+    return undefined;
+  }
+}
+
+/** Minimal storage surface (`localStorage` in the webview; a fake in tests). */
+export type SuiteStorageLike = Pick<Storage, "getItem" | "setItem">;
+
+/**
+ * Per-app marketplace local-state adapter (installed / version / phone-sync), backed by
+ * client storage (receive-only, never uploaded). Keys are namespaced `${appId}:suite:local:*`
+ * (the inconsistent `suite:registry` vs `mydocs:suite:registry` prefixes are normalized to
+ * always carry the app id). The CURRENT app is reported installed at its running version by
+ * default; siblings default to not-installed until the OS reports otherwise.
+ *
+ * Provides BOTH halves an `AppCatalog` needs: `getLocalState`/`setLocalState`, plus a
+ * registry cache (`listPublishedApps`/`cachePublishedApps`) that unions the cached OTA
+ * registry over the app's baked seed so the current app never vanishes.
+ */
+export interface LocalStateAdapter {
+  getLocalState(appId: string): Promise<AppLocalState>;
+  setLocalState(appId: string, state: AppLocalState): Promise<void>;
+  /** OTA-cached registry (if any) unioned over `seed`; the seed always survives. */
+  listPublishedApps(seed: PublishedApp[]): Promise<PublishedApp[]>;
+  /** Persist a freshly-verified registry from a suite `registry` target. */
+  cachePublishedApps(apps: PublishedApp[]): void;
+}
+
+export interface LocalStateAdapterOptions {
+  /** The version reporter for the current app. Defaults to {@link currentAppVersion}. */
+  appVersion?: () => Promise<string | undefined>;
+  /** Storage override (tests). Defaults to `localStorage` when present, else a no-op. */
+  storage?: () => SuiteStorageLike | null;
+}
+
+/**
+ * Build the localStorage-backed local-state + registry-cache adapter for one app. `appId`
+ * is the CURRENT app id (reported installed) and the key namespace.
+ */
+export function createLocalStateAdapter(appId: string, opts: LocalStateAdapterOptions = {}): LocalStateAdapter {
+  const appVersion = opts.appVersion ?? currentAppVersion;
+  const storage = opts.storage ?? (() => (typeof localStorage !== "undefined" ? localStorage : null));
+  const localKey = (id: string) => `${appId}:suite:local:${id}`;
+  const registryKey = `${appId}:suite:registry`;
+
+  return {
+    getLocalState: async (id) => {
+      try {
+        const raw = storage()?.getItem(localKey(id));
+        if (raw) return JSON.parse(raw) as AppLocalState;
+      } catch {
+        /* fall through to defaults */
+      }
+      if (id === appId) {
+        return { installed: true, installedVersion: await appVersion(), phoneSyncEnabled: false };
+      }
+      return { installed: false, phoneSyncEnabled: false };
+    },
+    setLocalState: async (id, state) => {
+      try {
+        storage()?.setItem(localKey(id), JSON.stringify(state));
+      } catch {
+        /* ignore — storage full / unavailable */
+      }
+    },
+    listPublishedApps: async (seed) => {
+      let cached: PublishedApp[] | null = null;
+      try {
+        const raw = storage()?.getItem(registryKey);
+        if (raw) cached = JSON.parse(raw) as PublishedApp[];
+      } catch {
+        cached = null;
+      }
+      if (!cached || cached.length === 0) return seed;
+      // OTA registry wins; keep any seed apps it omits so the current app never vanishes.
+      const byId = new Map(cached.map((a) => [a.appId, a] as const));
+      for (const s of seed) if (!byId.has(s.appId)) byId.set(s.appId, s);
+      return [...byId.values()];
+    },
+    cachePublishedApps: (apps) => {
+      try {
+        storage()?.setItem(registryKey, JSON.stringify(apps));
+      } catch {
+        /* ignore — storage full / unavailable */
+      }
+    },
+  };
+}
+
+export interface SuiteCatalogOptions {
+  /** The current app id (flags the current row; key namespace for the local-state adapter). */
+  appId: string;
+  /** This app's baked published-apps seed (kept app-side — it varies per app). */
+  seed: PublishedApp[];
+  /** Open a URL in the OS browser/store (native opener); the catalog gates it. */
+  openExternal: (url: string) => Promise<void>;
+  /**
+   * Read the published-apps registry. Defaults to the built-in {@link createLocalStateAdapter}
+   * cache unioned over `seed`. Pass to use a custom source (e.g. an existing app adapter).
+   */
+  listPublishedApps?: () => Promise<PublishedApp[]>;
+  /** Local-state adapter override; defaults to one built from `appId`. */
+  localState?: Pick<LocalStateAdapter, "getLocalState" | "setLocalState">;
+  /**
+   * Launch an installed sibling. Defaults to the suite-standard best-effort URL-scheme
+   * launch (`${appId}://open`) falling back to the marketing page.
+   */
+  launchApp?: (app: PublishedApp) => Promise<void>;
+  /** Active-platform detector; defaults to {@link detectPlatform}. */
+  platform?: () => string | undefined;
+  /** Suite entitlements (Patron/Partner) gating access-restricted apps. Default: none. */
+  entitlements?: () => Promise<Entitlements>;
+  /** https origin allow-list for feed-supplied URLs (forwarded to {@link createAppCatalog}). */
+  allowedUrlHosts?: string[];
+  /** Storage override for the default local-state adapter (tests). */
+  storage?: () => SuiteStorageLike | null;
+}
+
+/**
+ * One-call marketplace catalog wiring for a suite app — folds the four byte-identical glue
+ * files (platform + version + localState + registry + catalog) into a single DI factory.
+ * The app supplies only what genuinely varies: `appId`, its baked `seed`, and `openExternal`
+ * (everything else has a suite-standard default, overridable). Returns the same {@link AppCatalog}
+ * as {@link createAppCatalog}.
+ */
+export function createSuiteCatalog(opts: SuiteCatalogOptions): AppCatalog {
+  const defaultAdapter = createLocalStateAdapter(opts.appId, { storage: opts.storage });
+  const local = opts.localState ?? defaultAdapter;
+  const listPublishedApps = opts.listPublishedApps ?? (() => defaultAdapter.listPublishedApps(opts.seed));
+  const launchApp =
+    opts.launchApp ??
+    (async (app: PublishedApp) => {
+      try {
+        await opts.openExternal(`${app.appId}://open`);
+      } catch {
+        await opts.openExternal(app.marketingUrl);
+      }
+    });
+  return createAppCatalog({
+    currentAppId: opts.appId,
+    listPublishedApps,
+    getLocalState: local.getLocalState,
+    setLocalState: local.setLocalState,
+    openExternal: opts.openExternal,
+    launchApp,
+    platform: opts.platform ?? detectPlatform,
+    entitlements: opts.entitlements,
+    allowedUrlHosts: opts.allowedUrlHosts,
+  });
+}
+
+// ── Issue reporter (dedup: identical "Report an issue" wiring across apps) ────
+//
+// Several apps (myFinance, myHealth, myHome) shipped the same `reportIssue.ts`: a fixed
+// list of issue types, app+OS context collection, and a prefilled GitHub new-issue URL.
+// Promoted here as a DI factory parameterized only by the receiving `repo` (and an optional
+// default tier label). Pure helpers + dynamic Tauri imports — import-safe in the browser/SSR.
+
+export type IssueType = "bug" | "feature" | "question";
+
+/** The fixed issue-type vocabulary (value + human label + GitHub label). Identical in every app. */
+export const ISSUE_TYPES: { value: IssueType; label: string; label_gh: string }[] = [
+  { value: "bug", label: "Bug — something is broken", label_gh: "bug" },
+  { value: "feature", label: "Feature request — an idea or improvement", label_gh: "enhancement" },
+  { value: "question", label: "Question — need help or clarification", label_gh: "question" },
+];
+
+export interface IssueDraft {
+  type: IssueType;
+  title: string;
+  description: string;
+  steps?: string;
+  includeContext: boolean;
+  /** The reporter's engagement tier label (e.g. "Newcomer", "Patron"). */
+  tierLabel: string;
+}
+
+/** Indefinite article that reads naturally before a tier label ("an Expert", "a Patron"). */
+export function article(word: string): string {
+  return /^[aeiou]/i.test(word) ? "an" : "a";
+}
+
+export interface IssueReporter {
+  /** The receiving repo (e.g. "tokans/myFinance"). */
+  readonly repo: string;
+  readonly ISSUE_TYPES: typeof ISSUE_TYPES;
+  /** Indefinite article for a tier label. */
+  article(word: string): string;
+  /** Best-effort app + OS context appended to the issue body. Never throws. */
+  collectContext(): Promise<string>;
+  /** Build the prefilled GitHub "new issue" URL (GitHub prompts the user to sign in to submit). */
+  buildIssueUrl(draft: IssueDraft, context: string): string;
+}
+
+/**
+ * Build an issue reporter bound to one repo. `defaultTierLabel` (default "Newcomer") is used
+ * when a draft's `tierLabel` is blank. No module state; the Tauri APIs are dynamically
+ * imported in `collectContext` so this is import-safe everywhere.
+ */
+export function createIssueReporter(opts: { repo: string; defaultTierLabel?: string }): IssueReporter {
+  const defaultTier = opts.defaultTierLabel ?? "Newcomer";
+
+  const collectContext = async (): Promise<string> => {
+    const lines: string[] = [];
+    try {
+      if (isTauri()) {
+        const { getVersion, getTauriVersion } = await import("@tauri-apps/api/app");
+        const os = await import("@tauri-apps/plugin-os");
+        const [appVer, tauriVer] = await Promise.all([getVersion(), getTauriVersion()]);
+        lines.push(`- App version: ${appVer}`);
+        lines.push(`- Platform: ${os.platform()} ${os.version()} (${os.arch()})`);
+        lines.push(`- Tauri: ${tauriVer}`);
+      } else {
+        lines.push(`- Environment: web (npm run dev)`);
+        lines.push(`- User agent: ${typeof navigator !== "undefined" ? navigator.userAgent : "unknown"}`);
+      }
+    } catch {
+      // Context is a nicety, not a requirement — drop it silently on failure.
+    }
+    return lines.join("\n");
+  };
+
+  const buildIssueUrl = (draft: IssueDraft, context: string): string => {
+    const tier = draft.tierLabel.trim() || defaultTier;
+    const lead = `I am ${article(tier)} ${tier} user and ${draft.description.trim()}`;
+    const bodyParts = [lead];
+    if (draft.steps?.trim()) bodyParts.push(`### Steps to reproduce\n${draft.steps.trim()}`);
+    if (draft.includeContext && context) bodyParts.push(`### Environment\n${context}`);
+
+    const gh = ISSUE_TYPES.find((t) => t.value === draft.type);
+    const params = new URLSearchParams({
+      title: draft.title.trim(),
+      body: bodyParts.filter(Boolean).join("\n\n"),
+    });
+    if (gh?.label_gh) params.set("labels", gh.label_gh);
+    return `https://github.com/${opts.repo}/issues/new?${params.toString()}`;
+  };
+
+  return { repo: opts.repo, ISSUE_TYPES, article, collectContext, buildIssueUrl };
 }

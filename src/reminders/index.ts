@@ -54,6 +54,23 @@ export function addYearsISO(iso: string, n: number): string {
   return `${year}-${pad2(m!)}-${pad2(Math.min(d!, lastDay))}`;
 }
 
+/**
+ * Today as a LOCAL (not UTC) 'YYYY-MM-DD' string. Uses the device's local calendar date
+ * so a reminder due "today" matches the user's wall clock, not UTC midnight. Several apps
+ * shipped a byte-identical copy of this (myHealth `localToday`, myMemories `todayISO`) —
+ * promoted here once. Exported under both names so existing call sites resolve.
+ */
+export function localToday(): string {
+  const d = new Date();
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+
+/** Alias of {@link localToday} — the local 'YYYY-MM-DD' (matches myMemories' name). */
+export const todayISO = localToday;
+
 export interface ReminderLike {
   due_date: string;
   status?: string;

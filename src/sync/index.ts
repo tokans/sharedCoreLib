@@ -53,7 +53,7 @@ export function isNewer(
 // its own tables (owner === appId) plus, optionally, the co-owned `common` shared tables.
 // Device-to-device only — NO backend (the encrypted-byte LAN pipe is the injected
 // {@link SyncTransport}). This lets apps delete their local `src/sync/merge.ts`.
-import { tableName } from "../db/index.js";
+import { tableName, loadRegistry as coreLoadRegistry } from "../db/index.js";
 import { qualifiedName, type SchemaDescriptor, type SchemaRegistry } from "../schema/index.js";
 import { canAccessCompartment, compartmentOf, rowsForRecipient } from "../multiuser/index.js";
 
@@ -220,5 +220,112 @@ export function createMergeEngine(cfg: MergeEngineConfig): MergeEngine {
     scope: () => scope,
     outgoing: (recipientUserId) => buildBundle(cfg.db, scope, { recipientUserId }),
     ingest: (remote) => applyBundle(cfg.db, scope, remote, cfg.localDeviceId, { localUserId: cfg.localUserId }),
+  };
+}
+
+// ── App sync-engine factory (dedup: every app's `coreMerge.ts` was the same glue) ──
+//
+// Every syncing app (myDocs/myHobbies/myHome/myThoughts/myMemories) shipped a near-identical
+// `src/sync/coreMerge.ts`: a `<app>SyncScope`, a `create<App>MergeEngine` that opens the
+// shared DB + loads the registry + calls `createMergeEngine`, a `syncOnce` round, and (for
+// the multi-user apps) a `runScopedSync` that builds the engine per active member and runs a
+// round. The bodies differ ONLY by appId + how the DB is opened, so this factory takes those
+// two and returns the whole bundle. Pure/DI — the app still injects `openDb` + the transport.
+
+/** The result of one sync round (rows applied / skipped). */
+export interface SyncRoundResult { applied: number; skipped: number }
+
+/** Per-leg active-member ids that scope a multi-user round. Both undefined ⇒ single-user (inert). */
+export interface SyncCompartmentIds {
+  /** The ACTIVE member on this device — ingest skips compartments they can't access. */
+  localUserId?: string;
+  /** The PEER member being synced to — the outgoing bundle is filtered to rows they may receive. */
+  recipientUserId?: string;
+}
+
+export interface SyncEngineFactoryConfig {
+  appId: string;
+  /**
+   * Open the shared suite DB (the Tauri SQL plugin handle). May return `null` outside Tauri
+   * (browser/preview) — the engine builders then resolve to `null`. Called per engine build.
+   */
+  openDb: () => Promise<SyncDb | null>;
+  /** Load the schema registry for the opened DB. Defaults to `loadRegistry` from `../db`. */
+  loadRegistry?: (db: SyncDb) => Promise<SchemaRegistry>;
+  /** Table-scope options forwarded to {@link createMergeEngine}. */
+  scope?: ScopeOptions;
+}
+
+export interface SyncEngineFactory {
+  /** The tables this app may sync (owned + common), for a loaded registry. */
+  syncableTables(registry: SchemaRegistry): SchemaDescriptor[];
+  /**
+   * Build the per-app merge engine over the shared suite DB. `null` when `openDb` returns null
+   * (browser/preview). `localUserId` (multi-user) is an optional ingest-side compartment scope.
+   */
+  createMergeEngine(localDeviceId: string, localUserId?: string): Promise<MergeEngine | null>;
+  /**
+   * One sync round over an authenticated, paired LAN transport: send our scoped bundle, ingest
+   * the peer's. `encode`/`decode` carry the envelope crypto at the call site. `recipientUserId`
+   * (multi-user) filters the outgoing bundle; omit it (single-user) → every row is emitted.
+   */
+  syncOnce(
+    engine: MergeEngine,
+    transport: SyncTransport,
+    encode: (b: SyncBundle) => Uint8Array,
+    decode: (b: Uint8Array) => SyncBundle,
+    recipientUserId?: string,
+  ): Promise<SyncRoundResult>;
+  /**
+   * Multi-user (K4) round: build the engine scoped to the ACTIVE member (`compartments.localUserId`)
+   * and run one round scoped to the PEER (`compartments.recipientUserId`), so `private:<userId>`
+   * rows reach ONLY their owner. `null` in browser/preview. With an empty `compartments` this is
+   * byte-identical to a plain `createMergeEngine` + `syncOnce` (inert for the single-user tier).
+   */
+  runScopedSync(
+    localDeviceId: string,
+    transport: SyncTransport,
+    encode: (b: SyncBundle) => Uint8Array,
+    decode: (b: Uint8Array) => SyncBundle,
+    compartments: SyncCompartmentIds,
+  ): Promise<SyncRoundResult | null>;
+}
+
+/**
+ * Build an app's sync glue (scope + engine builder + `syncOnce` + `runScopedSync`) from just
+ * its `appId` and an `openDb`. Folds the byte-identical `coreMerge.ts` every syncing app
+ * shipped into one DI factory; the app keeps only its own `openDb`/transport at the call site.
+ */
+export function createSyncEngineFactory(cfg: SyncEngineFactoryConfig): SyncEngineFactory {
+  const load = cfg.loadRegistry ?? coreLoadRegistry;
+
+  const buildEngine = async (localDeviceId: string, localUserId?: string): Promise<MergeEngine | null> => {
+    const db = await cfg.openDb();
+    if (!db) return null;
+    const registry = await load(db);
+    return createMergeEngine({ db, registry, appId: cfg.appId, localDeviceId, localUserId, scope: cfg.scope });
+  };
+
+  const syncOnce = async (
+    engine: MergeEngine,
+    transport: SyncTransport,
+    encode: (b: SyncBundle) => Uint8Array,
+    decode: (b: Uint8Array) => SyncBundle,
+    recipientUserId?: string,
+  ): Promise<SyncRoundResult> => {
+    const outgoing = await engine.outgoing(recipientUserId);
+    const peerBytes = await transport.exchange(encode(outgoing));
+    return engine.ingest(decode(peerBytes));
+  };
+
+  return {
+    syncableTables: (registry) => syncableTables(registry, cfg.appId, cfg.scope),
+    createMergeEngine: buildEngine,
+    syncOnce,
+    runScopedSync: async (localDeviceId, transport, encode, decode, compartments) => {
+      const engine = await buildEngine(localDeviceId, compartments.localUserId);
+      if (!engine) return null;
+      return syncOnce(engine, transport, encode, decode, compartments.recipientUserId);
+    },
   };
 }

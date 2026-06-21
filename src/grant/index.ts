@@ -189,3 +189,100 @@ export function createGrantReceiver<TPayload>(cfg: GrantReceiverConfig<TPayload>
     },
   };
 }
+
+// ── Patron / Partner state (dedup: promoted from app `lib/patron.ts`) ─────────
+//
+// After a grant is received (above), the app records the donation/enrollment date in its
+// own settings store and derives a small status object used by the tier ladder + the
+// SuiteShell support CTA. myFinance and myMemories shipped near-identical copies; the
+// date math + key constants + state shape live here once. The factory is pure DI — the app
+// injects its own settings `get`/`set` (the vault/per-app settings table stay app-side).
+
+/** Settings keys for the receive-only patron/partner handoff. App settings store, not the vault. */
+export const PATRON_SINCE_KEY = "patron_since";
+export const PATRON_PENDING_KEY = "patron_pending";
+export const PARTNER_SINCE_KEY = "partner_since";
+
+/** Months after the donation date during which the Partner upgrade is offered. */
+export const PARTNER_WINDOW_MONTHS = 3;
+
+/** The derived patron/partner status the tier ladder + support CTA consume. */
+export interface PatronState {
+  /** Permanent once a donation/partner grant has been recorded. */
+  isPatron: boolean;
+  /** Donation/enrollment date 'YYYY-MM-DD', or null. */
+  donationDate: string | null;
+  /** True while within the Partner-offer window after the donation. */
+  partnerOfferActive: boolean;
+  /** Donation page opened, awaiting the file + a restart. */
+  pending: boolean;
+  /** Partner enrollment recorded (outranks/implies Patron). */
+  isPartner: boolean;
+}
+
+/**
+ * True if `today` is strictly before `donationDate` + `windowMonths`. Both 'YYYY-MM-DD'.
+ * `windowMonths` defaults to {@link PARTNER_WINDOW_MONTHS}.
+ */
+export function partnerWindowOpen(donationDate: string, today: string, windowMonths = PARTNER_WINDOW_MONTHS): boolean {
+  const start = new Date(`${donationDate}T00:00:00Z`);
+  if (Number.isNaN(start.getTime())) return false;
+  const expiry = new Date(start);
+  expiry.setUTCMonth(expiry.getUTCMonth() + windowMonths);
+  return new Date(`${today}T00:00:00Z`) < expiry;
+}
+
+/** Settings adapter the patron store reads/writes (app-injected; never the vault). */
+export interface PatronSettings {
+  get(key: string): Promise<string | null | undefined>;
+  set(key: string, value: string): Promise<void>;
+}
+
+export interface PatronStore {
+  /** Assemble the current patron state. `today` ('YYYY-MM-DD') is injected so the window math is testable. */
+  getState(today: string): Promise<PatronState>;
+  /** Record a donation (verified file): store the date, clear the pending flag. Idempotent. */
+  recordDonation(donationDate: string): Promise<void>;
+  /** Record a Partner enrollment (verified grant): store the date, clear pending. Idempotent. */
+  recordPartner(enrolledDate: string): Promise<void>;
+  /** Mark that the donation page was opened and a file/restart is awaited. */
+  markDonationPending(): Promise<void>;
+}
+
+/**
+ * Build the patron/partner store over an injected settings adapter. `windowMonths` overrides
+ * the Partner-offer window (default {@link PARTNER_WINDOW_MONTHS}). Pure DI — no DB, no vault,
+ * no module state; the app supplies its own settings get/set.
+ */
+export function createPatronStore(settings: PatronSettings, opts: { windowMonths?: number } = {}): PatronStore {
+  const windowMonths = opts.windowMonths ?? PARTNER_WINDOW_MONTHS;
+  return {
+    getState: async (today) => {
+      const [patronSince, partnerSince, pending] = await Promise.all([
+        settings.get(PATRON_SINCE_KEY),
+        settings.get(PARTNER_SINCE_KEY),
+        settings.get(PATRON_PENDING_KEY),
+      ]);
+      const donationDate = patronSince || partnerSince || null;
+      const isPatron = !!donationDate;
+      return {
+        isPatron,
+        donationDate,
+        partnerOfferActive: isPatron && !!donationDate && partnerWindowOpen(donationDate, today, windowMonths),
+        pending: pending === "1" && !isPatron,
+        isPartner: !!partnerSince,
+      };
+    },
+    recordDonation: async (donationDate) => {
+      await settings.set(PATRON_SINCE_KEY, donationDate);
+      await settings.set(PATRON_PENDING_KEY, "0");
+    },
+    recordPartner: async (enrolledDate) => {
+      await settings.set(PARTNER_SINCE_KEY, enrolledDate);
+      await settings.set(PATRON_PENDING_KEY, "0");
+    },
+    markDonationPending: async () => {
+      await settings.set(PATRON_PENDING_KEY, "1");
+    },
+  };
+}

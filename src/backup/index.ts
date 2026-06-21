@@ -37,7 +37,7 @@ import {
   type SchemaDescriptor,
   type SchemaRegistry,
 } from "../schema/index.js";
-import { createTableSql, tableName, REGISTRY_TABLE, type SqlDb } from "../db/index.js";
+import { createTableSql, tableName, REGISTRY_TABLE, loadRegistry, type SqlDb } from "../db/index.js";
 
 // ── SheetJS surface (injected; subset of the `xlsx` module we use) ───────────
 
@@ -303,6 +303,60 @@ export function suiteSourceForApp(db: SqlDb, registry: SchemaRegistry, appId: st
  */
 export function suiteSourceFull(db: SqlDb, registry: SchemaRegistry): BackupSource {
   return { id: "suite", db, descriptors: Object.values(registry), shared: true };
+}
+
+// ── Suite-wide backup convenience (dedup: identical glue across every app) ────
+//
+// Every suite app's Settings "Backup & restore" wires the SAME two helpers over
+// `createExcelBackup` + `suiteSourceFull`: a native byte-save, and a one-call build of
+// the engine over the whole shared suite DB. They are byte-identical across the apps, so
+// they live here as DI helpers (no app id / DB path baked in — both are injected).
+
+/**
+ * Native save of finished workbook bytes — the `BackupPanel`/Settings save handler every
+ * Tauri app exposes. Pops the OS save dialog (`.xlsx` filter, default name = `fileName`),
+ * then writes the bytes. Throws `"Export cancelled"` if the user picks no path. The Tauri
+ * plugins are dynamically imported so this module stays import-safe in the browser/SSR.
+ */
+export async function saveBackupBytes(bytes: Uint8Array, fileName: string): Promise<void> {
+  const { save } = await import("@tauri-apps/plugin-dialog");
+  const { writeFile } = await import("@tauri-apps/plugin-fs");
+  const path = await save({
+    defaultPath: fileName,
+    filters: [{ name: "Excel workbook", extensions: ["xlsx"] }],
+  });
+  if (!path) throw new Error("Export cancelled — no file chosen.");
+  await writeFile(path, bytes);
+}
+
+export interface SuiteBackupOptions {
+  /** The exporting app id (recorded in meta; gates per-app restore). */
+  appId: string;
+  /** Open the shared suite DB (the Tauri SQL plugin handle); called once per build. */
+  openDb: () => Promise<SqlDb>;
+  /**
+   * Load the schema registry for the opened DB. Defaults to `loadRegistry` from `../db`.
+   * Injectable for tests / to avoid pulling the default DB path.
+   */
+  loadRegistry?: (db: SqlDb) => Promise<SchemaRegistry>;
+  /** SheetJS override forwarded to {@link createExcelBackup} (tests inject a fake). */
+  xlsx?: XlsxModule;
+  /** OOXML encryptor override forwarded to {@link createExcelBackup} (password path only). */
+  ooxmlCrypto?: OoxmlCryptoModule;
+}
+
+/**
+ * Build the whole-suite backup engine over the shared suite DB in one call — the standard
+ * "export everything the system has" path. Opens the DB, loads the registry, and returns a
+ * {@link createExcelBackup} bound to a single {@link suiteSourceFull} source. Identical glue
+ * across every app, parameterized only by `appId` + the injected `openDb` (and an optional
+ * `loadRegistry` to dodge any default-DB-path coupling).
+ */
+export async function buildSuiteBackup(opts: SuiteBackupOptions): Promise<ExcelBackup> {
+  const db = await opts.openDb();
+  const load = opts.loadRegistry ?? loadRegistry;
+  const sources: BackupSource[] = [suiteSourceFull(db, await load(db))];
+  return createExcelBackup({ appId: opts.appId, sources, xlsx: opts.xlsx, ooxmlCrypto: opts.ooxmlCrypto });
 }
 
 // ── Factory ──────────────────────────────────────────────────────────────────

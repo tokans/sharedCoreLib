@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { createMergeEngine, syncableTables, applyBundle, buildBundle, type SyncDb, type SyncBundle } from "./index.js";
+import { createMergeEngine, createSyncEngineFactory, syncableTables, applyBundle, buildBundle, type SyncDb, type SyncBundle, type SyncTransport } from "./index.js";
 import type { SchemaDescriptor, SchemaRegistry } from "../schema/index.js";
 import { privateCompartment } from "../multiuser/index.js";
 
@@ -149,5 +149,64 @@ describe("compartment-aware sync (K0.4.4)", () => {
     const res = await engine.ingest(remote);
     expect(res.applied).toBe(2);
     expect(db.dump("myfinance_Account")).toHaveLength(2);
+  });
+});
+
+describe("createSyncEngineFactory (app coreMerge dedup)", () => {
+  const factory = () =>
+    createSyncEngineFactory({
+      appId: "myfinance",
+      openDb: async () => memDb(),
+      loadRegistry: async () => registry, // injected to avoid a registry-table dependency
+    });
+
+  it("syncableTables is scoped to owned + common", () => {
+    expect(factory().syncableTables(registry).map((s) => s.dbAlias)).toEqual(
+      expect.arrayContaining(["myfinance_Account", "common_Person"]),
+    );
+  });
+
+  it("createMergeEngine returns null when openDb yields null (browser/preview)", async () => {
+    const f = createSyncEngineFactory({ appId: "myfinance", openDb: async () => null, loadRegistry: async () => registry });
+    expect(await f.createMergeEngine("devA")).toBeNull();
+    expect(await f.runScopedSync("devA", { exchange: async () => new Uint8Array() }, () => new Uint8Array(), () => ({}), {})).toBeNull();
+  });
+
+  it("syncOnce exchanges the encoded bundle and ingests the peer's", async () => {
+    const f = factory();
+    const engine = (await f.createMergeEngine("devA"))!;
+    let sent: SyncBundle | null = null;
+    const peer: SyncBundle = {
+      "myfinance#Account": [{ id: "p1", v: "peer", updated_at: "2026-06-10", device_id: "devB" }],
+    };
+    const transport: SyncTransport = {
+      exchange: async (bytes) => {
+        sent = JSON.parse(new TextDecoder().decode(bytes)) as SyncBundle;
+        return new TextEncoder().encode(JSON.stringify(peer));
+      },
+    };
+    const res = await f.syncOnce(
+      engine,
+      transport,
+      (b) => new TextEncoder().encode(JSON.stringify(b)),
+      (b) => JSON.parse(new TextDecoder().decode(b)) as SyncBundle,
+    );
+    expect(sent).not.toBeNull();
+    expect(res.applied).toBe(1);
+  });
+
+  it("runScopedSync builds the member-scoped engine and runs a round", async () => {
+    const f = factory();
+    const transport: SyncTransport = {
+      exchange: async () => new TextEncoder().encode(JSON.stringify({})),
+    };
+    const res = await f.runScopedSync(
+      "devA",
+      transport,
+      (b) => new TextEncoder().encode(JSON.stringify(b)),
+      (b) => JSON.parse(new TextDecoder().decode(b)) as SyncBundle,
+      { localUserId: "alice", recipientUserId: "bob" },
+    );
+    expect(res).toEqual({ applied: 0, skipped: 0 });
   });
 });
