@@ -803,15 +803,19 @@ export function createIssueReporter(opts: { repo: string; defaultTierLabel?: str
   const collectContext = async (): Promise<string> => {
     const lines: string[] = [];
     try {
+      // Platform comes from the UA-based detectPlatform() (no optional plugin), so apps that
+      // don't depend on @tauri-apps/plugin-os still get a platform line. App + Tauri versions
+      // use @tauri-apps/api/app, which every Tauri app already depends on.
+      const plat = detectPlatform() ?? "unknown";
       if (isTauri()) {
         const { getVersion, getTauriVersion } = await import("@tauri-apps/api/app");
-        const os = await import("@tauri-apps/plugin-os");
         const [appVer, tauriVer] = await Promise.all([getVersion(), getTauriVersion()]);
         lines.push(`- App version: ${appVer}`);
-        lines.push(`- Platform: ${os.platform()} ${os.version()} (${os.arch()})`);
+        lines.push(`- Platform: ${plat}`);
         lines.push(`- Tauri: ${tauriVer}`);
       } else {
         lines.push(`- Environment: web (npm run dev)`);
+        lines.push(`- Platform: ${plat}`);
         lines.push(`- User agent: ${typeof navigator !== "undefined" ? navigator.userAgent : "unknown"}`);
       }
     } catch {

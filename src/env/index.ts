@@ -33,14 +33,22 @@ const SAFE_EXTERNAL_SCHEMES = new Set(["https:", "tel:", "mailto:"]);
  * The opener plugin is dynamically imported so the web bundle never needs it; it is an OPTIONAL
  * peer dependency (apps that call this in Tauri must provide `@tauri-apps/plugin-opener`).
  */
-export const openExternal = async (url: string): Promise<void> => {
-  let safe = false;
+/**
+ * True only for an absolute URL whose scheme the suite is willing to hand to the OS opener
+ * (https/tel/mailto). Relative/malformed URLs and `javascript:`/`data:`/`file:`/custom-app
+ * schemes return false. Shared so apps stop re-implementing the predicate; it is exactly the
+ * guard {@link openExternal} applies, exposed for callers that want to pre-check a URL.
+ */
+export function isSafeExternalUrl(url: string): boolean {
   try {
-    safe = SAFE_EXTERNAL_SCHEMES.has(new URL(url).protocol);
+    return SAFE_EXTERNAL_SCHEMES.has(new URL(url).protocol);
   } catch {
-    safe = false;
+    return false;
   }
-  if (!safe) return;
+}
+
+export const openExternal = async (url: string): Promise<void> => {
+  if (!isSafeExternalUrl(url)) return;
   if (isTauri()) {
     try {
       const { openUrl } = await import("@tauri-apps/plugin-opener");
