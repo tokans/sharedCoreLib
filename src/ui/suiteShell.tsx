@@ -197,6 +197,16 @@ export interface SuiteShellProps {
   /** Optional content above the nav in the desktop sidebar (e.g. a tier badge). */
   sidebarTop?: React.ReactNode;
 
+  /**
+   * ADDITIVE — an app-owned slot centered in the DESKTOP top bar only (md+, where the
+   * sidebar layout has the room), between the (desktop-invisible) brand and the
+   * profile/account/userSwitch group on the right. For a page-level action bar (e.g. a
+   * content editor's Save/Submit buttons) that wants to sit in the SAME row as the profile
+   * icon rather than stacking its own header underneath. Never shown on mobile — the app
+   * should render its own compact fallback there. Hidden entirely when omitted — existing
+   * apps are pixel-identical.
+   */
+  topBarCenter?: React.ReactNode;
   /** Top-right injected slot (app-owned): e.g. myHealth's family-profile button + drawer. */
   profile?: React.ReactNode;
   /** Optional built-in account button (top-right, tier ≥ 2). */
@@ -476,7 +486,7 @@ export function SuiteShell(props: SuiteShellProps): React.ReactElement {
   const {
     brand, nav, children, centralActions = [], centralLabel = "Menu", centralIcon,
     centralVariant = "sheet",
-    moreAppsTo, onReportIssue, actions = [], support, moreExtra, moreHeader, sidebarTop, profile, account, userSwitch,
+    moreAppsTo, onReportIssue, actions = [], support, moreExtra, moreHeader, sidebarTop, topBarCenter, profile, account, userSwitch,
     onExternal, contentClassName,
   } = props;
 
@@ -611,10 +621,19 @@ export function SuiteShell(props: SuiteShellProps): React.ReactElement {
 
       {/* Main column */}
       <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-        {/* Top bar: brand (mobile only) left, profile/account right (both viewports).
-            Pads for the notch/status bar (top) and a landscape notch (left/right). */}
-        <header className="flex items-center justify-between border-b bg-card pb-3 pl-[calc(1rem_+_var(--safe-left,env(safe-area-inset-left)))] pr-[calc(1rem_+_var(--safe-right,env(safe-area-inset-right)))] pt-[calc(0.75rem_+_var(--safe-top,env(safe-area-inset-top)))]">
+        {/* Top bar: brand (mobile only) left, an optional app-injected centre slot, then
+            profile/account right (both viewports). Pads for the notch/status bar (top)
+            and a landscape notch (left/right). */}
+        <header className="relative flex items-center justify-between gap-3 border-b bg-card pb-3 pl-[calc(1rem_+_var(--safe-left,env(safe-area-inset-left)))] pr-[calc(1rem_+_var(--safe-right,env(safe-area-inset-right)))] pt-[calc(0.75rem_+_var(--safe-top,env(safe-area-inset-top)))]">
           <div className="flex items-center gap-2 font-semibold md:invisible">{brand}</div>
+          {/* Absolutely centered on the FULL header width — flexbox centering between brand
+              and profile would skew off-centre since those two flanking blocks aren't the
+              same width (brand is wider, just invisible on desktop). */}
+          {topBarCenter && (
+            <div className="pointer-events-none absolute inset-0 hidden items-center justify-center md:flex">
+              <div className="pointer-events-auto">{topBarCenter}</div>
+            </div>
+          )}
           <div className="flex items-center gap-2">
             {userSwitchEl}
             {accountButton}

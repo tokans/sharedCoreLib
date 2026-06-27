@@ -44,6 +44,7 @@ export {
   type SuiteShellProps, type SuiteNavItem, type SuiteAction, type SuiteAccount,
   type SuiteSupport, type SuiteUserSwitch, type SuiteUserSwitchMember,
 } from "./suiteShell.js";
+export { ExplorerPanel, type ExplorerPanelProps, type ExplorerPanelRailItem } from "./explorerPanel.js";
 
 // Dev/test tier override — the floating chooser + its browser plumbing (the pure resolver lives
 // in `sharedcorelib/tiers`). Reusable across apps; renders nothing outside dev (see allowed()).
@@ -52,3 +53,17 @@ export {
   type TierOverride, type TierOverrideConfig, type TierOverrideEnv,
 } from "./tierOverride.js";
 export { TestTierChooser, type TestTierChooserProps, type TestTierOption } from "./testTierChooser.js";
+
+// Dev/test role + identity switchers — same idea as the tier chooser above, for apps with
+// backend-resolved roles/sessions (promoted out of myWorkAssistant). Dumb UI over an
+// app-injected callback; render behind the same dev-build check as the rest of a dev panel.
+export {
+  DevPill, DevRoleSwitcher, DevIdentitySwitcher, parseDevTestIdentities,
+  type DevPillProps, type DevRoleOption, type DevRoleSwitcherProps,
+  type DevTestIdentity, type DevIdentitySwitcherProps,
+} from "./devSwitcher.js";
+
+// The floating "dev tools" affordance (bottom-right pill → expands into a card) that
+// TestTierChooser renders internally, generalized to hold ARBITRARY dev-panel content
+// (e.g. several DevRoleSwitcher/DevIdentitySwitcher sections at once) behind one button.
+export { DevFloatingPanel, type DevFloatingPanelProps } from "./devFloatingPanel.js";

@@ -109,6 +109,25 @@ describe("registerAuxMigrations", () => {
     expect(hist[0]!.n).toBe(1);
   });
 
+  it("two concurrent callers applying the same new step don't throw on the ledger insert", async () => {
+    // Regression: a consumer whose boot effect runs twice concurrently (e.g. React
+    // StrictMode double-invoking a dev effect) can have both calls compute the same
+    // `pending` set before either's ledger row lands. Both attempt the SAME version's
+    // INSERT into __aux_migrations__ (app_id, version) — a plain INSERT would throw a
+    // unique-constraint error on the loser, aborting its whole caller mid-sequence.
+    const { db, raw } = realDb();
+    await registerSchemas(db, [account()]);
+    const [a, b] = await Promise.all([
+      registerAuxMigrations(db, "myfinance", [TRIGGER_STEP]),
+      registerAuxMigrations(db, "myfinance", [TRIGGER_STEP]),
+    ]);
+    // Exactly one of the two calls recorded the apply; the other saw it already applied
+    // (or, depending on interleaving, both saw "pending" but neither threw).
+    expect([...a.applied, ...b.applied].length).toBeGreaterThan(0);
+    const hist = raw.prepare(`SELECT COUNT(*) AS n FROM "${AUX_MIGRATIONS_TABLE}"`).all() as { n: number }[];
+    expect(hist[0]!.n).toBe(1); // never duplicated despite the race
+  });
+
   it("applies ascending; rejects out-of-order and duplicate versions in a batch", async () => {
     const { db } = realDb();
     await registerSchemas(db, [account()]);

@@ -128,6 +128,47 @@ export async function verifyManifestSignature(
   }
 }
 
+/** A detached signature paired with the keyId of the signer that produced it. */
+export interface DetachedSignature {
+  keyId: string;
+  sigBytes: Uint8Array;
+}
+
+/**
+ * k-of-n countersigning config for the highest-sensitivity artifact kinds (executable code):
+ * every key allowed to sign, and how many DISTINCT valid signatures are required. Single-signer
+ * callers (the existing `pubkeyHex` path on {@link VerifyOptions}) are unaffected — this is an
+ * additive alternative, not a replacement, so today's masters/runtime consumers keep working
+ * unchanged while a namespace that needs the stronger bar (e.g. a feature-module feed) opts in
+ * by passing `auth` instead of `pubkeyHex`.
+ */
+export interface ThresholdAuth {
+  /** keyId → pubkeyHex for every key allowed to countersign. */
+  keys: Record<string, string>;
+  threshold: number;
+}
+
+/**
+ * Verify that at least `auth.threshold` DISTINCT keys in `auth.keys` produced a valid signature
+ * over `bytes`. A key can't count twice even if it signed more than once. Never throws.
+ */
+export async function verifyThresholdSignatures(
+  bytes: Uint8Array,
+  sigs: DetachedSignature[],
+  auth: ThresholdAuth,
+): Promise<boolean> {
+  if (auth.threshold < 1) return false;
+  const validKeyIds = new Set<string>();
+  for (const s of sigs) {
+    if (validKeyIds.has(s.keyId)) continue;
+    const pubkeyHex = auth.keys[s.keyId];
+    if (!pubkeyHex) continue; // not a recognized signer for this role
+    if (await verifyManifestSignature(bytes, s.sigBytes, pubkeyHex)) validKeyIds.add(s.keyId);
+    if (validKeyIds.size >= auth.threshold) return true; // short-circuit once met
+  }
+  return validKeyIds.size >= auth.threshold;
+}
+
 // sha256Hex lives in the dependency-free `./hash.js` leaf so the offline feed-builder
 // can hash without importing this engine; re-exported here to keep the public surface.
 import { sha256Hex } from "./hash.js";
@@ -200,7 +241,14 @@ export interface VerifyOptions<T extends BaseManifest = BaseManifest> {
    * caching layer validate a cache hit against the signed manifest before trusting it.
    */
   fetchFile: (file: string, expected?: ExpectedFile) => Promise<Uint8Array>;
-  pubkeyHex: string;
+  /** Single-signer auth (existing behavior). Ignored when {@link auth} is set. */
+  pubkeyHex?: string;
+  /**
+   * k-of-n countersigning auth for the highest-sensitivity namespaces (executable code). When
+   * set, the manifest signature passed to {@link verifyAndDecryptManifest} MUST be a
+   * `DetachedSignature[]` (not a single `Uint8Array`) and `pubkeyHex` is ignored.
+   */
+  auth?: ThresholdAuth;
   transportKeyB64: string;
   /** Override the manifest validation schema (default: {@link genericManifestSchema}). */
   manifestSchema?: ManifestSchemaLike<T>;
@@ -219,10 +267,13 @@ export interface VerifyOptions<T extends BaseManifest = BaseManifest> {
  */
 export async function verifyAndDecryptManifest<T extends BaseManifest = BaseManifest>(
   manifestBytes: Uint8Array,
-  sigBytes: Uint8Array,
+  sigBytes: Uint8Array | DetachedSignature[],
   opts: VerifyOptions<T>,
 ): Promise<{ manifest: T; entries: VerifiedEntry[] }> {
-  if (!(await verifyManifestSignature(manifestBytes, sigBytes, opts.pubkeyHex))) {
+  const sigOk = opts.auth
+    ? await verifyThresholdSignatures(manifestBytes, sigBytes as DetachedSignature[], opts.auth)
+    : await verifyManifestSignature(manifestBytes, sigBytes as Uint8Array, opts.pubkeyHex!);
+  if (!sigOk) {
     throw new Error("master manifest signature invalid");
   }
 

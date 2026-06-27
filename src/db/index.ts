@@ -57,24 +57,45 @@ export function sqliteType(dataType: string): string {
 
 const colName = (f: FieldDescriptor): string => ident(f.dbAlias ?? f.name);
 
-/** CREATE TABLE (+ indexes) statements for a schema. */
-export function createTableSql(s: SchemaDescriptor): string[] {
-  const t = tableName(s);
-  const cols = s.fields.map((f) => {
-    const notNull = f.required && !f.keyField ? " NOT NULL" : "";
-    return `  ${colName(f)} ${sqliteType(f.dataType)}${notNull}`;
-  });
-  const keys = s.fields.filter((f) => f.keyField).map(colName);
-  if (keys.length) cols.push(`  PRIMARY KEY (${keys.join(", ")})`);
-  const stmts = [`CREATE TABLE IF NOT EXISTS ${ident(t)} (\n${cols.join(",\n")}\n)`];
+/**
+ * The schema's sole numeric `keyField`, if it has exactly one. SQLite only aliases a
+ * PRIMARY KEY column to the internal ROWID (and so auto-populates it on INSERT) when its
+ * declared type is the literal `INTEGER` and it is the table's only key column — `REAL`
+ * (the normal `sqliteType` mapping for `"number"`) does NOT get this treatment, so an
+ * app-side auto-incrementing integer id must be special-cased to `INTEGER` here. Numeric
+ * fields that are not the sole key (e.g. `balance`, `value`, `height_cm`) are unaffected
+ * and keep their normal `REAL` affinity.
+ */
+function soleNumericKeyField(s: SchemaDescriptor): FieldDescriptor | null {
+  const keys = s.fields.filter((f) => f.keyField);
+  return keys.length === 1 && keys[0]!.dataType === "number" ? keys[0]! : null;
+}
 
+/** `CREATE [UNIQUE] INDEX IF NOT EXISTS` for every field-level `index:` on a schema. */
+function fieldIndexSql(s: SchemaDescriptor): string[] {
+  const t = tableName(s);
+  const stmts: string[] = [];
   for (const f of s.fields) {
     if (!f.index || f.keyField) continue;
-    const unique = f.index === "Unique" ? "UNIQUE " : "";
     if (f.index === "Text") continue; // full-text needs FTS — left to the app
+    const unique = f.index === "Unique" ? "UNIQUE " : "";
     stmts.push(`CREATE ${unique}INDEX IF NOT EXISTS ${ident(`ix_${t}_${f.name}`)} ON ${ident(t)} (${colName(f)})`);
   }
   return stmts;
+}
+
+/** CREATE TABLE (+ indexes) statements for a schema. */
+export function createTableSql(s: SchemaDescriptor): string[] {
+  const t = tableName(s);
+  const intKey = soleNumericKeyField(s);
+  const cols = s.fields.map((f) => {
+    const notNull = f.required && !f.keyField ? " NOT NULL" : "";
+    const type = f === intKey ? "INTEGER" : sqliteType(f.dataType);
+    return `  ${colName(f)} ${type}${notNull}`;
+  });
+  const keys = s.fields.filter((f) => f.keyField).map(colName);
+  if (keys.length) cols.push(`  PRIMARY KEY (${keys.join(", ")})`);
+  return [`CREATE TABLE IF NOT EXISTS ${ident(t)} (\n${cols.join(",\n")}\n)`, ...fieldIndexSql(s)];
 }
 
 /** ALTER TABLE ADD COLUMN for an additively-added field (append-only; no NOT NULL). */
@@ -124,6 +145,14 @@ export interface RegisterResult {
   duplicateCandidates: { schema: string; detail: string }[];
   /** Qualified names of descriptors that ADOPT an existing table (no table created). */
   adopted: string[];
+  /**
+   * Field-level index statements that failed when re-asserted against an already-
+   * registered schema (e.g. data inserted while the index was missing now violates a
+   * UNIQUE index being recreated) — non-fatal, since a stale index is a lesser problem
+   * than aborting registration for every other table. The caller should dedupe/clean the
+   * offending data and let this run again.
+   */
+  indexWarnings: { sql: string; error: string }[];
 }
 
 /**
@@ -159,12 +188,28 @@ export async function registerSchemas(
   const creating = descriptors.filter((d) => !d.adopts);
 
   const applied: string[] = [];
+  const indexWarnings: { sql: string; error: string }[] = [];
   const merged = mergeIntoRegistry(registry, creating);
   for (const d of creating) {
     const q = qualifiedName(d);
     const existing = registry[q];
+    // For an already-registered schema, migrationFor only returns ALTER ADD COLUMN for
+    // genuinely new fields — a genuine migration failure here should still halt
+    // registration, so it's NOT wrapped below.
     const stmts = existing ? migrationFor(existing, d) : createTableSql(merged[q]!);
     for (const sql of stmts) { await db.execute(sql); applied.push(sql); }
+    if (existing) {
+      // It has no opinion on a field-level index that already exists in the descriptor —
+      // re-assert those too: CREATE INDEX IF NOT EXISTS is a free no-op when the index is
+      // already there, and cheap insurance against it having been dropped out-of-band
+      // (e.g. by an app's own table-recreating repair migration). Fail-SOFT per statement:
+      // data that drifted to violate a should-be-unique index while it was missing must
+      // not abort registration for every other table — surface it instead.
+      for (const sql of fieldIndexSql(merged[q]!)) {
+        try { await db.execute(sql); applied.push(sql); }
+        catch (e) { indexWarnings.push({ sql, error: e instanceof Error ? e.message : String(e) }); }
+      }
+    }
     await db.execute(
       `INSERT INTO ${ident(REGISTRY_TABLE)} (qualified, descriptor) VALUES (?, ?) ` +
         `ON CONFLICT(qualified) DO UPDATE SET descriptor = excluded.descriptor`,
@@ -176,6 +221,7 @@ export async function registerSchemas(
     applied,
     duplicateCandidates: check.duplicateCandidates.map((d) => ({ schema: d.schema, detail: d.detail })),
     adopted: adopting.map((d) => qualifiedName(d)),
+    indexWarnings,
   };
 }
 
@@ -409,8 +455,13 @@ export async function registerAuxMigrations(
   const applied: number[] = [];
   for (const step of pending) {
     for (const stmt of step.sql) await db.execute(stmt);
+    // OR IGNORE: two concurrent callers (e.g. React StrictMode double-invoking a dev boot
+    // effect) can both compute the same `pending` set before either's ledger row lands —
+    // each statement above is itself idempotent (IF NOT EXISTS/OR IGNORE by convention),
+    // so let the loser's redundant ledger insert no-op instead of throwing a unique-
+    // constraint error that would abort its whole caller mid-sequence.
     await db.execute(
-      `INSERT INTO ${ident(AUX_MIGRATIONS_TABLE)} (app_id, version, applied_at) VALUES (?, ?, ?)`,
+      `INSERT OR IGNORE INTO ${ident(AUX_MIGRATIONS_TABLE)} (app_id, version, applied_at) VALUES (?, ?, ?)`,
       [appId, step.version, new Date().toISOString()],
     );
     applied.push(step.version);

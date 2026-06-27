@@ -45,6 +45,25 @@ describe("DDL generation", () => {
     expect(sqliteType("boolean")).toBe("INTEGER");
     expect(sqliteType("string")).toBe("TEXT");
   });
+  it("a sole numeric keyField is emitted as INTEGER so SQLite aliases it to ROWID", () => {
+    // App-side auto-incrementing integer ids (the convention every myHealth table uses,
+    // e.g. `idField()` in appTables.ts) declare `{ dataType: "number", keyField: true }`.
+    // SQLite only auto-populates a PRIMARY KEY column on INSERT when its declared type is
+    // the literal "INTEGER" (REAL — the normal sqliteType("number") mapping — does NOT
+    // alias ROWID, so the column would silently stay NULL forever on every insert).
+    const intIdSchema = account({
+      fields: [
+        { name: "id", dataType: "number", keyField: true },
+        { name: "name", dataType: "string" },
+        { name: "balance", dataType: "number" },
+      ],
+    });
+    const [create] = createTableSql(intIdSchema);
+    expect(create).toMatch(/"id" INTEGER/);
+    expect(create).not.toMatch(/"id" REAL/);
+    // A genuinely fractional numeric field that is NOT the key keeps REAL affinity.
+    expect(create).toMatch(/"balance" REAL/);
+  });
   it("migrationFor: additive → ALTER ADD COLUMN; conflict → throws", () => {
     const next = account({ fields: [...account().fields, { name: "currency", dataType: "string" }] });
     const stmts = migrationFor(account(), next);
@@ -62,6 +81,20 @@ describe("registerSchemas", () => {
     expect(res.registry["myfinance#Account"]).toBeTruthy();
     expect(calls.execute.some((c) => /CREATE TABLE IF NOT EXISTS "myfinance_Account"/.test(c.sql))).toBe(true);
     expect(calls.execute.some((c) => c.sql.includes(REGISTRY_TABLE) && /INSERT/.test(c.sql))).toBe(true);
+  });
+
+  it("re-registering an unchanged schema re-asserts its field-level indexes (not just new columns)", async () => {
+    // Regression: migrationFor only diffs columns, so a unique index that existed in the
+    // descriptor from the start was never re-asserted on a later, no-column-change
+    // registerSchemas call — meaning an index dropped out-of-band (e.g. by an app's own
+    // table-recreating repair migration) had no path back. CREATE INDEX IF NOT EXISTS is
+    // a no-op when nothing changed, so doing this unconditionally is free.
+    const existing = account({
+      fields: [...account().fields, { name: "iban", dataType: "string", index: "Unique" }],
+    });
+    const { db, calls } = fakeDb({ registryRows: [{ qualified: "myfinance#Account", descriptor: JSON.stringify(existing) }] });
+    await registerSchemas(db, [existing]); // identical descriptor — no column migration needed
+    expect(calls.execute.some((c) => /CREATE UNIQUE INDEX IF NOT EXISTS "ix_myfinance_Account_iban"/.test(c.sql))).toBe(true);
   });
 
   it("conflicting re-register → throws (runtime backstop)", async () => {
@@ -154,5 +187,101 @@ describe("createSharedDb (governed handle)", () => {
 
     const notOwner = createSharedDb({ db, appId: "myhealth", grantedLevel: "Internal", registry });
     await expect(notOwner.write("myfinance#Account", { id: "2" })).rejects.toThrow(/may not write/);
+  });
+});
+
+// The fakeDb above never executes SQL, so it can't catch genuine SQLite-semantics bugs
+// (a string-matching DDL test missed exactly this: a sole numeric PK declared REAL is
+// syntactically fine but never auto-populates on INSERT). Run the same DDL against a REAL
+// SQLite engine where available (Node 22.5+'s builtin `node:sqlite`); skip gracefully on
+// older Node (e.g. CI pinned to Node 20) rather than failing the suite.
+let DatabaseSyncCtor: (new (location: string) => InstanceType<typeof import("node:sqlite").DatabaseSync>) | null = null;
+try {
+  ({ DatabaseSync: DatabaseSyncCtor } = await import("node:sqlite"));
+} catch {
+  /* node:sqlite unavailable on this Node — the suite below is skipped */
+}
+
+describe.skipIf(!DatabaseSyncCtor)("createTableSql against a real SQLite engine", () => {
+  it("an app-side auto-increment integer id round-trips through INSERT", async () => {
+    const Ctor = DatabaseSyncCtor!;
+    const db = new Ctor(":memory:");
+    const sql: SqlDb = {
+      select: async (s, params = []) => db.prepare(s).all(...(params as never[])) as never,
+      execute: async (s, params = []) => {
+        const info = db.prepare(s).run(...(params as never[]));
+        return { rowsAffected: Number(info.changes), lastInsertId: Number(info.lastInsertRowid) };
+      },
+    };
+    const schema = account({
+      fields: [
+        { name: "id", dataType: "number", keyField: true },
+        { name: "name", dataType: "string", required: true },
+      ],
+    });
+    for (const stmt of createTableSql(schema)) await sql.execute(stmt);
+
+    const res = await sql.execute(`INSERT INTO "myfinance_Account" (name) VALUES (?)`, ["Alice"]);
+    expect(res.lastInsertId).toBe(1);
+    const rows = await sql.select<{ id: number; name: string }>(`SELECT * FROM "myfinance_Account"`);
+    // Before the fix this was `id: null` — the column never aliased ROWID, so the
+    // returned lastInsertId pointed at a row that "WHERE id = ?" could never find.
+    expect(rows).toEqual([{ id: 1, name: "Alice" }]);
+
+    const res2 = await sql.execute(`UPDATE "myfinance_Account" SET name = ? WHERE id = ?`, ["Alice B", res.lastInsertId]);
+    expect(res2.rowsAffected).toBe(1);
+  });
+
+  it("registerSchemas heals a field-level index dropped out-of-band, end to end", async () => {
+    const Ctor = DatabaseSyncCtor!;
+    const db = new Ctor(":memory:");
+    const sql: SqlDb = {
+      select: async (s, params = []) => db.prepare(s).all(...(params as never[])) as never,
+      execute: async (s, params = []) => {
+        const info = db.prepare(s).run(...(params as never[]));
+        return { rowsAffected: Number(info.changes), lastInsertId: Number(info.lastInsertRowid) };
+      },
+    };
+    const schema = account({ fields: [...account().fields, { name: "iban", dataType: "string", index: "Unique" }] });
+    await registerSchemas(sql, [schema]);
+
+    db.exec(`DROP INDEX "ix_myfinance_Account_iban"`); // simulate an out-of-band drop
+    db.prepare(`INSERT INTO "myfinance_Account" (id, name, iban) VALUES (1, 'a', 'X')`).run();
+
+    const res = await registerSchemas(sql, [schema]); // same descriptor, no column change — should still heal the index
+    expect(res.indexWarnings).toEqual([]);
+    const idx = db.prepare(`SELECT name FROM sqlite_master WHERE name='ix_myfinance_Account_iban'`).all();
+    expect(idx).toHaveLength(1);
+    // The index is back — a NEW conflicting insert is rejected again.
+    expect(() => db.prepare(`INSERT INTO "myfinance_Account" (id, name, iban) VALUES (2, 'b', 'X')`).run()).toThrow(
+      /UNIQUE constraint failed/,
+    );
+  });
+
+  it("a pre-existing duplicate blocking the index heal is reported, not thrown — other tables still register", async () => {
+    const Ctor = DatabaseSyncCtor!;
+    const db = new Ctor(":memory:");
+    const sql: SqlDb = {
+      select: async (s, params = []) => db.prepare(s).all(...(params as never[])) as never,
+      execute: async (s, params = []) => {
+        const info = db.prepare(s).run(...(params as never[]));
+        return { rowsAffected: Number(info.changes), lastInsertId: Number(info.lastInsertRowid) };
+      },
+    };
+    const schema = account({ fields: [...account().fields, { name: "iban", dataType: "string", index: "Unique" }] });
+    const other = account({ namespace: "myhealth", name: "Vital", owner: "myhealth" });
+    await registerSchemas(sql, [schema, other]);
+
+    db.exec(`DROP INDEX "ix_myfinance_Account_iban"`);
+    db.prepare(`INSERT INTO "myfinance_Account" (id, name, iban) VALUES (1, 'a', 'X')`).run();
+    db.prepare(`INSERT INTO "myfinance_Account" (id, name, iban) VALUES (2, 'b', 'X')`).run(); // duplicate — index can't come back yet
+
+    const res = await registerSchemas(sql, [schema, other]); // must not throw
+    expect(res.indexWarnings).toHaveLength(1);
+    expect(res.indexWarnings[0]!.error).toMatch(/UNIQUE constraint failed/);
+    const idx = db.prepare(`SELECT name FROM sqlite_master WHERE name='ix_myfinance_Account_iban'`).all();
+    expect(idx).toHaveLength(0); // still missing — caller must dedupe first
+    // `other`'s own (unaffected) registration still completed normally.
+    expect(res.registry["myhealth#Vital"]).toBeTruthy();
   });
 });
