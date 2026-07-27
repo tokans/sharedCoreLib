@@ -106,12 +106,28 @@ export function addColumnSql(s: SchemaDescriptor, f: FieldDescriptor): string {
 /**
  * The migration statements to evolve `existing` into `proposed` (additive only). Throws
  * (via the schema engine) if the change is incompatible. Returns [] when identical.
+ *
+ * `liveColumns`, when given, is the TABLE's actual physical column set (e.g. from
+ * `PRAGMA table_info`) — a field absent from `existing` (the registry's stored copy) but
+ * already physically present is skipped rather than re-ALTERed. This matters because the
+ * registry record and the live table can drift out of sync (a raw aux-SQL step added the
+ * column out-of-band, or a field was renamed away from and back to the same name across
+ * two registry-writing boots): diffing against the registry alone would then re-issue
+ * `ADD COLUMN` for something that already exists and throw "duplicate column name",
+ * aborting registration for every other table in the same batch.
  */
-export function migrationFor(existing: SchemaDescriptor, proposed: SchemaDescriptor): string[] {
+export function migrationFor(
+  existing: SchemaDescriptor,
+  proposed: SchemaDescriptor,
+  liveColumns?: ReadonlySet<string>,
+): string[] {
   // mergeIntoRegistry throws on conflict; reuse it to validate, then diff fields.
   mergeIntoRegistry({ [qualifiedName(existing)]: existing }, [proposed]);
   const have = new Set(existing.fields.map((f) => f.name));
-  return proposed.fields.filter((f) => !have.has(f.name)).map((f) => addColumnSql(proposed, f));
+  return proposed.fields
+    .filter((f) => !have.has(f.name))
+    .filter((f) => !liveColumns?.has(f.dbAlias ?? f.name))
+    .map((f) => addColumnSql(proposed, f));
 }
 
 // ── On-disk registry ─────────────────────────────────────────────────────────
@@ -195,8 +211,19 @@ export async function registerSchemas(
     const existing = registry[q];
     // For an already-registered schema, migrationFor only returns ALTER ADD COLUMN for
     // genuinely new fields — a genuine migration failure here should still halt
-    // registration, so it's NOT wrapped below.
-    const stmts = existing ? migrationFor(existing, d) : createTableSql(merged[q]!);
+    // registration, so it's NOT wrapped below. Cross-check against the table's ACTUAL
+    // columns (not just the registry's stored copy) so a field the registry doesn't know
+    // about yet, but that already physically exists, doesn't get re-ALTERed in (see
+    // migrationFor's doc comment).
+    let stmts: string[];
+    if (existing) {
+      const liveColumns = new Set(
+        (await db.select<{ name: string }>(`PRAGMA table_info(${ident(tableName(d))})`)).map((c) => c.name),
+      );
+      stmts = migrationFor(existing, d, liveColumns);
+    } else {
+      stmts = createTableSql(merged[q]!);
+    }
     for (const sql of stmts) { await db.execute(sql); applied.push(sql); }
     if (existing) {
       // It has no opinion on a field-level index that already exists in the descriptor —

@@ -30,13 +30,23 @@
         "default": "./dist/ocr/index.js"
       }
     },
+    "./docmodel": {
+      "import": {
+        "types": "./dist/docmodel/index.d.mts",
+        "default": "./dist/docmodel/index.mjs"
+      },
+      "require": {
+        "types": "./dist/docmodel/index.d.ts",
+        "default": "./dist/docmodel/index.js"
+      }
+    },
     "./package.json": "./package.json"
   },
   "files": ["dist", "README.md"],
   "keywords": ["ocr", "scanned-document", "document-parser", "fuzzy-match", "confidence", "mylife"],
   "scripts": {
-    "build": "tsup src/index.ts src/ocr/index.ts --format cjs,esm --dts",
-    "dev": "tsup src/index.ts src/ocr/index.ts --format cjs,esm --dts --watch",
+    "build": "tsup src/index.ts src/ocr/index.ts src/docmodel/index.ts --format cjs,esm --dts",
+    "dev": "tsup src/index.ts src/ocr/index.ts src/docmodel/index.ts --format cjs,esm --dts --watch",
     "test": "vitest run",
     "test:watch": "vitest",
     "type-check": "tsc --noEmit"

@@ -25,7 +25,7 @@
  */
 import * as React from "react";
 import { NavLink, useLocation } from "react-router-dom";
-import { Bug, ChevronDown, ChevronUp, Handshake, Heart, LayoutGrid, MoreHorizontal, Plus, RotateCw, type LucideIcon } from "lucide-react";
+import { Bug, ChevronDown, ChevronUp, Handshake, Heart, LayoutGrid, MoreHorizontal, PanelLeftClose, PanelLeftOpen, Plus, RotateCw, type LucideIcon } from "lucide-react";
 import { cn } from "./cn.js";
 import { Sheet, SheetContent, SheetClose } from "./sheet.js";
 import { SupportedByTokans } from "./attribution.js";
@@ -207,6 +207,13 @@ export interface SuiteShellProps {
    * apps are pixel-identical.
    */
   topBarCenter?: React.ReactNode;
+  /**
+   * ADDITIVE — also render `topBarCenter` in the MOBILE top bar (by default it is desktop-only).
+   * Opt-in so existing apps that supply a desktop-only centre slot are unaffected; apps that want
+   * their top-bar content (e.g. a reader's page controls) available on phones set this true and
+   * make that content responsive/compact.
+   */
+  topBarCenterOnMobile?: boolean;
   /** Top-right injected slot (app-owned): e.g. myHealth's family-profile button + drawer. */
   profile?: React.ReactNode;
   /** Optional built-in account button (top-right, tier ≥ 2). */
@@ -218,6 +225,15 @@ export interface SuiteShellProps {
   onExternal?: (href: string) => void;
   /** Classes for the centered content wrapper (e.g. "mx-auto max-w-3xl"). Default: full width. */
   contentClassName?: string;
+
+  /**
+   * ADDITIVE — collapse the desktop sidebar to an icon-only rail (frees width for the page
+   * content; the same idea as `sharedcorelib/ui`'s `ExplorerPanel`). Controlled: both props
+   * must be supplied to opt in. Omitting either keeps today's fixed-width sidebar, pixel-
+   * identical for every app that hasn't adopted this yet.
+   */
+  sidebarCollapsed?: boolean;
+  onSidebarCollapsedChange?: (collapsed: boolean) => void;
 }
 
 const TONE_CLASS: Record<NonNullable<SuiteAction["tone"]>, string> = {
@@ -486,9 +502,13 @@ export function SuiteShell(props: SuiteShellProps): React.ReactElement {
   const {
     brand, nav, children, centralActions = [], centralLabel = "Menu", centralIcon,
     centralVariant = "sheet",
-    moreAppsTo, onReportIssue, actions = [], support, moreExtra, moreHeader, sidebarTop, topBarCenter, profile, account, userSwitch,
-    onExternal, contentClassName,
+    moreAppsTo, onReportIssue, actions = [], support, moreExtra, moreHeader, sidebarTop, topBarCenter, topBarCenterOnMobile, profile, account, userSwitch,
+    onExternal, contentClassName, sidebarCollapsed, onSidebarCollapsedChange,
   } = props;
+  // Controlled opt-in: both the value AND the setter must be supplied, or the sidebar stays
+  // at today's fixed width (existing apps that haven't adopted this are unaffected).
+  const sidebarCollapsible = onSidebarCollapsedChange !== undefined;
+  const collapsed = sidebarCollapsible && !!sidebarCollapsed;
 
   // Suite-standard chrome first (same icon/label/order in every app), then the app's own actions,
   // then the suite-standard support CTA (donate → partner, resolved in core so it's identical
@@ -587,12 +607,17 @@ export function SuiteShell(props: SuiteShellProps): React.ReactElement {
     // The shell is bounded to the viewport height so only <main> scrolls — the sidebar's height is
     // independent of the page content (it never grows with, or scrolls away with, tall content).
     <div className="flex h-screen w-full flex-col overflow-hidden md:flex-row">
-      {/* Desktop sidebar — fixed full-height; its nav scrolls inside SidebarScrollArea. */}
-      <aside className="hidden w-60 shrink-0 flex-col border-r bg-card md:flex">
-        <div className="flex items-center gap-2 px-4 py-4 text-lg font-semibold">{brand}</div>
-        {sidebarTop}
+      {/* Desktop sidebar — fixed full-height; its nav scrolls inside SidebarScrollArea.
+          Collapsible to an icon-only rail when the app opts in (sidebarCollapsed +
+          onSidebarCollapsedChange both supplied) — see ExplorerPanel for the same idea
+          applied to an app-owned panel. */}
+      <aside className={cn("hidden shrink-0 flex-col border-r bg-card md:flex", collapsed ? "w-14" : "w-60")}>
+        <div className={cn("flex items-center gap-2 px-4 py-4 text-lg font-semibold", collapsed && "justify-center px-2")}>
+          {collapsed ? null : brand}
+        </div>
+        {!collapsed && sidebarTop}
         <SidebarScrollArea>
-          <nav className="mt-2 flex flex-col gap-1 px-2 pb-2">
+          <nav className={cn("mt-2 flex flex-col gap-1 px-2 pb-2", collapsed && "items-center px-1")}>
             {nav.map((it) => {
               const Icon = it.icon;
               return (
@@ -601,21 +626,32 @@ export function SuiteShell(props: SuiteShellProps): React.ReactElement {
                   to={it.to}
                   end={it.end ?? it.to === "/"}
                   className={navLinkClass(it.state)}
-                  title={it.state === "nudge" ? it.lockHint : undefined}
+                  title={collapsed ? it.label : it.state === "nudge" ? it.lockHint : undefined}
                 >
-                  <Icon className="h-4 w-4" />
-                  <span className="flex-1">{it.label}</span>
-                  {it.state === "nudge" && <LockGlyph />}
+                  <Icon className="h-4 w-4 shrink-0" />
+                  {!collapsed && <span className="flex-1">{it.label}</span>}
+                  {!collapsed && it.state === "nudge" && <LockGlyph />}
                 </NavLink>
               );
             })}
           </nav>
         </SidebarScrollArea>
-        <div className="flex flex-col gap-1 border-t p-2">
-          {allActions.map((a) => (
+        <div className={cn("flex flex-col gap-1 border-t p-2", collapsed && "items-center")}>
+          {sidebarCollapsible && (
+            <button
+              type="button"
+              aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}
+              title={collapsed ? "Expand sidebar" : "Collapse sidebar"}
+              onClick={() => onSidebarCollapsedChange?.(!collapsed)}
+              className="flex h-8 w-8 items-center justify-center self-end rounded text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground"
+            >
+              {collapsed ? <PanelLeftOpen className="h-4 w-4" /> : <PanelLeftClose className="h-4 w-4" />}
+            </button>
+          )}
+          {!collapsed && allActions.map((a) => (
             <ActionRow key={a.key} action={a} />
           ))}
-          {attribution}
+          {!collapsed && attribution}
         </div>
       </aside>
 
@@ -625,14 +661,12 @@ export function SuiteShell(props: SuiteShellProps): React.ReactElement {
             profile/account right (both viewports). Pads for the notch/status bar (top)
             and a landscape notch (left/right). */}
         <header className="relative flex items-center justify-between gap-3 border-b bg-card pb-3 pl-[calc(1rem_+_var(--safe-left,env(safe-area-inset-left)))] pr-[calc(1rem_+_var(--safe-right,env(safe-area-inset-right)))] pt-[calc(0.75rem_+_var(--safe-top,env(safe-area-inset-top)))]">
-          <div className="flex items-center gap-2 font-semibold md:invisible">{brand}</div>
-          {/* Absolutely centered on the FULL header width — flexbox centering between brand
-              and profile would skew off-centre since those two flanking blocks aren't the
-              same width (brand is wider, just invisible on desktop). */}
+          {/* CHANGED md:invisible to md:hidden */}
+          <div className="flex items-center gap-2 font-semibold md:hidden">{brand}</div>
+          
+          {/* LEFT-aligned container filling the remaining space */}
           {topBarCenter && (
-            <div className="pointer-events-none absolute inset-0 hidden items-center justify-center md:flex">
-              <div className="pointer-events-auto">{topBarCenter}</div>
-            </div>
+            <div className={cn("min-w-0 flex-1 items-center justify-start gap-3", topBarCenterOnMobile ? "flex" : "hidden md:flex")}>{topBarCenter}</div>
           )}
           <div className="flex items-center gap-2">
             {userSwitchEl}

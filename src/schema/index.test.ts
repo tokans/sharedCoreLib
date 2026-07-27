@@ -62,6 +62,23 @@ describe("compareSchema", () => {
     const r = compareSchema(base({ confidentiality: "Confidential" }), base({ confidentiality: "Internal" }));
     expect(r.conflicts.some((c) => c.kind === "confidentiality-downgrade")).toBe(true);
   });
+  it("enum widening (added values) → additive, not a conflict", () => {
+    const withEnum = (vals: string[]) => base({ fields: [
+      { name: "id", dataType: "id", keyField: true },
+      { name: "kind", dataType: "enum", constraints: { enumValues: vals } },
+    ] });
+    const r = compareSchema(withEnum(["a", "b"]), withEnum(["a", "b", "c"]));
+    expect(r.conflicts.some((c) => c.kind === "field-constraint-mismatch")).toBe(false);
+    expect(r.status).not.toBe("conflict");
+  });
+  it("enum narrowing (removed value) → still a conflict", () => {
+    const withEnum = (vals: string[]) => base({ fields: [
+      { name: "id", dataType: "id", keyField: true },
+      { name: "kind", dataType: "enum", constraints: { enumValues: vals } },
+    ] });
+    const r = compareSchema(withEnum(["a", "b"]), withEnum(["a"]));
+    expect(r.conflicts.some((c) => c.kind === "field-constraint-mismatch")).toBe(true);
+  });
 });
 
 describe("checkAgainstRegistry + mergeIntoRegistry", () => {

@@ -9,6 +9,7 @@
 //! myWorkAssistant: in-memory bytes via the content-addressed asset store) and calls into
 //! this crate for the actual pixel work.
 
+pub mod erase;
 pub mod inpaint;
 
 use std::io::Cursor;

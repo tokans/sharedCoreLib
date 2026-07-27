@@ -44,6 +44,15 @@ export interface Vault {
   isUnlocked(): boolean;
   lock(): Promise<void>;
   saveSnapshot(): Promise<void>;
+  /**
+   * "Forgot password" recovery: locks the session (if any), then permanently
+   * deletes the snapshot file and every encrypted document blob. There is no
+   * key escrow, so a wrong password is unrecoverable by design — this clears
+   * the slate so the next `unlock(newPassword)` creates a fresh vault. Callers
+   * own cleaning up their own DB rows that referenced the old secrets (e.g. a
+   * credential-ref table) since those are app-specific.
+   */
+  resetVault(): Promise<void>;
   putCredential(key: string, cred: Credential): Promise<void>;
   getCredential(key: string): Promise<Credential | null>;
   removeCredential(key: string): Promise<void>;
@@ -255,6 +264,16 @@ export function createVault(cfg: VaultConfig): Vault {
       withLock(async () => {
         if (!session) return;
         await session.save();
+      }),
+    resetVault: () =>
+      withLock(async () => {
+        await lockInner();
+        if (!isTauri()) return;
+        const { remove, exists } = await import("@tauri-apps/plugin-fs");
+        const path = await snapshotPath();
+        if (await exists(path)) await remove(path);
+        const dir = await docDir();
+        if (await exists(dir)) await remove(dir, { recursive: true });
       }),
     putCredential: (key, cred) =>
       withLock(async () => {

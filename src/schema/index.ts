@@ -245,8 +245,21 @@ export interface CompareResult {
   merged?: SchemaDescriptor;
 }
 
-const sameConstraints = (a?: FieldConstraints, b?: FieldConstraints): boolean =>
-  JSON.stringify(a ?? {}) === JSON.stringify(b ?? {});
+/**
+ * Constraint compatibility for schema evolution. Every constraint must match exactly EXCEPT
+ * `enumValues`, where the proposed set may ADD values (a superset of the existing) — enum
+ * widening is additive and safe (the column is TEXT; older rows still validate), matching the
+ * contract's "additive merges auto-apply". Removing/renaming an enum value is still a conflict.
+ */
+const sameConstraints = (a?: FieldConstraints, b?: FieldConstraints): boolean => {
+  const { enumValues: ae, ...aRest } = a ?? {};
+  const { enumValues: be, ...bRest } = b ?? {};
+  if (JSON.stringify(aRest) !== JSON.stringify(bRest)) return false;
+  if (!ae && !be) return true;
+  if (!ae || !be) return false;
+  // Proposed (b) must contain every existing (a) value — additions are allowed, removals are not.
+  return ae.every((v) => be.includes(v));
+};
 
 /**
  * Compare a proposed schema against the existing registered one (same qualified name).

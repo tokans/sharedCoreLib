@@ -72,6 +72,16 @@ describe("DDL generation", () => {
     const conflicting = account({ fields: [{ name: "id", dataType: "number", keyField: true }] });
     expect(() => migrationFor(account(), conflicting)).toThrow();
   });
+  it("migrationFor: a field missing from the registry but already a live column is skipped, not re-ALTERed", () => {
+    // Regression: the registry's stored descriptor can drift from the table's actual
+    // columns (a raw aux-SQL step added it out-of-band, or a field was renamed away and
+    // back to the same name across two registry-writing boots). Diffing against the
+    // registry alone would re-issue ADD COLUMN for "currency" here even though it already
+    // physically exists, throwing "duplicate column name" at execute time.
+    const next = account({ fields: [...account().fields, { name: "currency", dataType: "string" }] });
+    const stmts = migrationFor(account(), next, new Set(["currency"]));
+    expect(stmts).toHaveLength(0);
+  });
 });
 
 describe("registerSchemas", () => {
@@ -81,6 +91,21 @@ describe("registerSchemas", () => {
     expect(res.registry["myfinance#Account"]).toBeTruthy();
     expect(calls.execute.some((c) => /CREATE TABLE IF NOT EXISTS "myfinance_Account"/.test(c.sql))).toBe(true);
     expect(calls.execute.some((c) => c.sql.includes(REGISTRY_TABLE) && /INSERT/.test(c.sql))).toBe(true);
+  });
+
+  it("a field new to the registry but already a live column doesn't throw 'duplicate column name'", async () => {
+    // End-to-end version of the migrationFor regression above: registerSchemas queries
+    // PRAGMA table_info for an already-registered table and must not re-emit ADD COLUMN
+    // for something PRAGMA says already exists, even though the registry's stored
+    // descriptor doesn't mention it yet.
+    const existing = account(); // registry doesn't know about "currency"
+    const next = account({ fields: [...account().fields, { name: "currency", dataType: "string" }] });
+    const { db, calls } = fakeDb({
+      registryRows: [{ qualified: "myfinance#Account", descriptor: JSON.stringify(existing) }],
+      dataRows: [{ name: "id" }, { name: "name" }, { name: "balance" }, { name: "currency" }], // PRAGMA table_info result
+    });
+    await expect(registerSchemas(db, [next])).resolves.toBeTruthy();
+    expect(calls.execute.some((c) => /ADD COLUMN "currency"/.test(c.sql))).toBe(false);
   });
 
   it("re-registering an unchanged schema re-asserts its field-level indexes (not just new columns)", async () => {
